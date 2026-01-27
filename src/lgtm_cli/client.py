@@ -38,6 +38,22 @@ class LGTMClient:
             response.raise_for_status()
             return response.json()
 
+    def post_json(self, path: str, json_data: dict | None = None, params: dict | None = None) -> dict:
+        url = f"{self.base_url}{path}"
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.post(url, json=json_data, params=params, headers=self._get_headers())
+            response.raise_for_status()
+            return response.json()
+
+    def delete(self, path: str, params: dict | None = None) -> dict:
+        url = f"{self.base_url}{path}"
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.delete(url, params=params, headers=self._get_headers())
+            response.raise_for_status()
+            if response.text:
+                return response.json()
+            return {}
+
 
 class LokiClient(LGTMClient):
     def query(self, query: str, start: str, end: str, limit: int = 100, direction: str = "backward") -> dict:
@@ -157,3 +173,67 @@ class TempoClient(LGTMClient):
 
     def tag_values(self, tag: str) -> dict:
         return self.get(f"/api/search/tag/{tag}/values")
+
+
+class AlertingClient(LGTMClient):
+    BASE_PATH = "/api/alertmanager/grafana/api/v2"
+
+    def list_alerts(
+        self,
+        filter: list[str] | None = None,
+        receiver: str | None = None,
+        silenced: bool = True,
+        inhibited: bool = True,
+        active: bool = True,
+    ) -> list:
+        params = {
+            "silenced": str(silenced).lower(),
+            "inhibited": str(inhibited).lower(),
+            "active": str(active).lower(),
+        }
+        if filter:
+            params["filter"] = filter
+        if receiver:
+            params["receiver"] = receiver
+        return self.get(f"{self.BASE_PATH}/alerts", params)
+
+    def list_alert_groups(
+        self,
+        filter: list[str] | None = None,
+        receiver: str | None = None,
+    ) -> list:
+        params = {}
+        if filter:
+            params["filter"] = filter
+        if receiver:
+            params["receiver"] = receiver
+        return self.get(f"{self.BASE_PATH}/alerts/groups", params or None)
+
+    def list_silences(self, filter: list[str] | None = None) -> list:
+        params = {}
+        if filter:
+            params["filter"] = filter
+        return self.get(f"{self.BASE_PATH}/silences", params or None)
+
+    def get_silence(self, silence_id: str) -> dict:
+        return self.get(f"{self.BASE_PATH}/silence/{silence_id}")
+
+    def create_silence(
+        self,
+        matchers: list[dict],
+        starts_at: str,
+        ends_at: str,
+        created_by: str,
+        comment: str,
+    ) -> dict:
+        payload = {
+            "matchers": matchers,
+            "startsAt": starts_at,
+            "endsAt": ends_at,
+            "createdBy": created_by,
+            "comment": comment,
+        }
+        return self.post_json(f"{self.BASE_PATH}/silences", payload)
+
+    def delete_silence(self, silence_id: str) -> dict:
+        return self.delete(f"{self.BASE_PATH}/silence/{silence_id}")

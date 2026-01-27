@@ -1,5 +1,6 @@
 import os
 import re
+import subprocess
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -23,6 +24,7 @@ class InstanceConfig:
     loki: ServiceConfig | None = None
     prometheus: ServiceConfig | None = None
     tempo: ServiceConfig | None = None
+    alerting: ServiceConfig | None = None
 
 
 @dataclass
@@ -41,22 +43,71 @@ class Config:
         return next(iter(self.instances.values()))
 
 
-def expand_env_vars(value: str) -> str:
-    pattern = r'\$\{([^}]+)\}'
-    def replace(match):
+def resolve_1password_ref(ref: str) -> str:
+    """Resolve a 1Password reference using the op CLI.
+
+    Args:
+        ref: 1Password reference in format 'op://vault/item/field'
+
+    Returns:
+        The secret value from 1Password
+
+    Raises:
+        RuntimeError: If op CLI fails or is not available
+    """
+    try:
+        result = subprocess.run(
+            ["op", "read", ref],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip()
+    except FileNotFoundError:
+        raise RuntimeError("1Password CLI (op) not found. Install it from https://1password.com/downloads/command-line/")
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to read from 1Password: {e.stderr.strip()}")
+
+
+def resolve_secret(value: str) -> str:
+    """Resolve secrets from environment variables or 1Password.
+
+    Supports:
+    - Environment variables: ${VAR_NAME}
+    - 1Password references: op://vault/item/field
+
+    Args:
+        value: The value to resolve
+
+    Returns:
+        The resolved value with secrets substituted
+    """
+    # Check if entire value is a 1Password reference
+    if value.startswith("op://"):
+        return resolve_1password_ref(value)
+
+    # Handle ${op://...} pattern for 1Password within strings
+    op_pattern = r'\$\{(op://[^}]+)\}'
+    def replace_op(match):
+        return resolve_1password_ref(match.group(1))
+    value = re.sub(op_pattern, replace_op, value)
+
+    # Handle ${VAR_NAME} pattern for environment variables
+    env_pattern = r'\$\{([^}]+)\}'
+    def replace_env(match):
         var_name = match.group(1)
         return os.environ.get(var_name, "")
-    return re.sub(pattern, replace, value)
+    return re.sub(env_pattern, replace_env, value)
 
 
 def parse_service_config(data: dict | None) -> ServiceConfig | None:
     if not data:
         return None
     return ServiceConfig(
-        url=expand_env_vars(data.get("url", "")),
-        token=expand_env_vars(data["token"]) if data.get("token") else None,
-        username=expand_env_vars(data["username"]) if data.get("username") else None,
-        headers={k: expand_env_vars(v) for k, v in data.get("headers", {}).items()} or None,
+        url=resolve_secret(data.get("url", "")),
+        token=resolve_secret(data["token"]) if data.get("token") else None,
+        username=resolve_secret(data["username"]) if data.get("username") else None,
+        headers={k: resolve_secret(v) for k, v in data.get("headers", {}).items()} or None,
     )
 
 
@@ -75,6 +126,7 @@ def load_config(path: Path | None = None) -> Config:
             loki=parse_service_config(instance_data.get("loki")),
             prometheus=parse_service_config(instance_data.get("prometheus")),
             tempo=parse_service_config(instance_data.get("tempo")),
+            alerting=parse_service_config(instance_data.get("alerting")),
         )
 
     return Config(

@@ -6,7 +6,7 @@ from pathlib import Path
 import click
 
 from .config import load_config, DEFAULT_CONFIG_PATH
-from .client import LokiClient, PrometheusClient, TempoClient
+from .client import LokiClient, PrometheusClient, TempoClient, AlertingClient
 
 
 # Best practice defaults
@@ -438,6 +438,211 @@ def tag_values(ctx, tag: str):
         sys.exit(1)
 
 
+# === ALERTS COMMANDS ===
+
+DEFAULT_SILENCE_DURATION_HOURS = 2
+
+
+def parse_duration(duration: str) -> timedelta:
+    """Parse duration string like '2h', '30m', '1d' to timedelta."""
+    import re
+    match = re.match(r'^(\d+)([smhd])$', duration.lower())
+    if not match:
+        raise click.BadParameter(f"Invalid duration format: {duration}. Use format like '2h', '30m', '1d'")
+    value = int(match.group(1))
+    unit = match.group(2)
+    if unit == 's':
+        return timedelta(seconds=value)
+    elif unit == 'm':
+        return timedelta(minutes=value)
+    elif unit == 'h':
+        return timedelta(hours=value)
+    elif unit == 'd':
+        return timedelta(days=value)
+    raise click.BadParameter(f"Unknown time unit: {unit}")
+
+
+def parse_matcher(matcher: str) -> dict:
+    """Parse matcher string like 'alertname=HighCPU' or 'severity=~warning|critical'."""
+    import re
+    match = re.match(r'^([^=!~]+)(=~|!~|!=|=)(.*)$', matcher)
+    if not match:
+        raise click.BadParameter(f"Invalid matcher format: {matcher}. Use format like 'label=value' or 'label=~regex'")
+    name = match.group(1)
+    op = match.group(2)
+    value = match.group(3)
+    return {
+        "name": name,
+        "value": value,
+        "isRegex": op in ("=~", "!~"),
+        "isEqual": op in ("=", "=~"),
+    }
+
+
+@main.group()
+@click.pass_context
+def alerts(ctx):
+    """Query Grafana Alerting/Alertmanager."""
+    instance = ctx.obj["config"].get_instance(ctx.obj["instance_name"])
+    if not instance.alerting:
+        output_error(f"Alerting not configured for instance '{instance.name}'")
+        sys.exit(1)
+    ctx.obj["client"] = AlertingClient(instance.alerting)
+
+
+@alerts.command("list")
+@click.option("--filter", "-f", "filters", multiple=True, help="Filter alerts by label (e.g., 'alertname=HighCPU')")
+@click.option("--receiver", "-r", help="Filter by receiver")
+@click.option("--silenced/--no-silenced", default=True, help="Include silenced alerts")
+@click.option("--inhibited/--no-inhibited", default=True, help="Include inhibited alerts")
+@click.option("--active/--no-active", default=True, help="Include active alerts")
+@click.pass_context
+def alerts_list(ctx, filters: tuple[str, ...], receiver: str | None, silenced: bool, inhibited: bool, active: bool):
+    """List firing alerts.
+
+    Examples:
+
+      lgtm alerts list
+
+      lgtm alerts list --filter 'alertname=HighCPU'
+
+      lgtm alerts list --no-silenced --active
+    """
+    try:
+        result = ctx.obj["client"].list_alerts(
+            filter=list(filters) if filters else None,
+            receiver=receiver,
+            silenced=silenced,
+            inhibited=inhibited,
+            active=active,
+        )
+        output_json(result)
+    except Exception as e:
+        output_error(str(e))
+        sys.exit(1)
+
+
+@alerts.command("groups")
+@click.option("--filter", "-f", "filters", multiple=True, help="Filter alerts by label")
+@click.option("--receiver", "-r", help="Filter by receiver")
+@click.pass_context
+def alerts_groups(ctx, filters: tuple[str, ...], receiver: str | None):
+    """List alerts grouped by receiver/labels.
+
+    Examples:
+
+      lgtm alerts groups
+
+      lgtm alerts groups --filter 'severity=critical'
+    """
+    try:
+        result = ctx.obj["client"].list_alert_groups(
+            filter=list(filters) if filters else None,
+            receiver=receiver,
+        )
+        output_json(result)
+    except Exception as e:
+        output_error(str(e))
+        sys.exit(1)
+
+
+@alerts.command("silences")
+@click.option("--filter", "-f", "filters", multiple=True, help="Filter silences by label")
+@click.pass_context
+def alerts_silences(ctx, filters: tuple[str, ...]):
+    """List all silences.
+
+    Examples:
+
+      lgtm alerts silences
+
+      lgtm alerts silences --filter 'alertname=HighCPU'
+    """
+    try:
+        result = ctx.obj["client"].list_silences(
+            filter=list(filters) if filters else None,
+        )
+        output_json(result)
+    except Exception as e:
+        output_error(str(e))
+        sys.exit(1)
+
+
+@alerts.command("silence-get")
+@click.argument("silence_id")
+@click.pass_context
+def alerts_silence_get(ctx, silence_id: str):
+    """Get a specific silence by ID.
+
+    Examples:
+
+      lgtm alerts silence-get abc123-def456
+    """
+    try:
+        result = ctx.obj["client"].get_silence(silence_id)
+        output_json(result)
+    except Exception as e:
+        output_error(str(e))
+        sys.exit(1)
+
+
+@alerts.command("silence-create")
+@click.option("--matcher", "-m", "matchers", multiple=True, required=True,
+              help="Matcher in format 'label=value' or 'label=~regex'. Can be specified multiple times.")
+@click.option("--duration", "-d", default="2h", help="Silence duration (e.g., '2h', '30m', '1d'). Default: 2h")
+@click.option("--comment", "-c", required=True, help="Comment explaining the silence")
+@click.option("--created-by", required=True, help="Creator identifier (e.g., email)")
+@click.pass_context
+def alerts_silence_create(ctx, matchers: tuple[str, ...], duration: str, comment: str, created_by: str):
+    """Create a new silence.
+
+    Examples:
+
+      lgtm alerts silence-create --matcher 'alertname=HighCPU' --duration 2h --comment "Maintenance" --created-by "user@example.com"
+
+      lgtm alerts silence-create -m 'alertname=HighCPU' -m 'severity=warning' -d 1h -c "Investigating" --created-by "ops"
+    """
+    try:
+        parsed_matchers = [parse_matcher(m) for m in matchers]
+        delta = parse_duration(duration)
+        now = datetime.now(timezone.utc)
+        starts_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        ends_at = (now + delta).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        result = ctx.obj["client"].create_silence(
+            matchers=parsed_matchers,
+            starts_at=starts_at,
+            ends_at=ends_at,
+            created_by=created_by,
+            comment=comment,
+        )
+        output_json(result)
+    except click.BadParameter as e:
+        output_error(str(e))
+        sys.exit(1)
+    except Exception as e:
+        output_error(str(e))
+        sys.exit(1)
+
+
+@alerts.command("silence-delete")
+@click.argument("silence_id")
+@click.pass_context
+def alerts_silence_delete(ctx, silence_id: str):
+    """Delete/expire a silence by ID.
+
+    Examples:
+
+      lgtm alerts silence-delete abc123-def456
+    """
+    try:
+        ctx.obj["client"].delete_silence(silence_id)
+        click.echo(f"Silence {silence_id} deleted successfully")
+    except Exception as e:
+        output_error(str(e))
+        sys.exit(1)
+
+
 # === CONFIG COMMANDS ===
 
 @main.command()
@@ -454,6 +659,7 @@ def instances(ctx):
             "loki": instance.loki.url if instance.loki else None,
             "prometheus": instance.prometheus.url if instance.prometheus else None,
             "tempo": instance.tempo.url if instance.tempo else None,
+            "alerting": instance.alerting.url if instance.alerting else None,
         }
     output_json(result)
 
