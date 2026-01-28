@@ -1,6 +1,6 @@
 [project]
 name = "lgtm-cli"
-version = "1.0.1"
+version = "1.0.2"
 description = "Lightweight CLI for querying Loki, Prometheus/Mimir, and Tempo"
 readme = "README.md"
 license = "MIT"
