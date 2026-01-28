@@ -1,10 +1,11 @@
 [project]
 name = "lgtm-cli"
-version = "0.1.0"
+version = "1.0.1"
 description = "Lightweight CLI for querying Loki, Prometheus/Mimir, and Tempo"
 readme = "README.md"
+license = "MIT"
 authors = [
-    { name = "Aiman Ismail", email = "aiman@primeintellect.ai" }
+    { name = "Aiman Ismail", email = "m.aimanismail@gmail.com" }
 ]
 requires-python = ">=3.12"
 dependencies = [
