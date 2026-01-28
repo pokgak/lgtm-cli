@@ -69,11 +69,11 @@ instances:
   production:
     loki:
       url: "https://loki.example.com"
-      token: "${LOKI_TOKEN}"  # Bearer auth
+      token: "${LOKI_TOKEN}"  # Bearer auth (env var)
     prometheus:
       url: "https://mimir.example.com"
       username: "${MIMIR_USER}"  # Basic auth
-      token: "${MIMIR_TOKEN}"
+      token: "op://vault/mimir/token"  # 1Password reference
     tempo:
       url: "https://tempo.example.com"
       token: "${TEMPO_TOKEN}"
@@ -81,7 +81,9 @@ instances:
         X-Scope-OrgID: "my-tenant"
 ```
 
-Environment variables (`${VAR_NAME}`) are expanded at runtime.
+Secrets are resolved at runtime:
+- Environment variables: `${VAR_NAME}`
+- 1Password references: `op://vault/item/field` (requires [1Password CLI](https://1password.com/downloads/command-line/))
 
 ## Built-in Best Practices
 
