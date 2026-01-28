@@ -7,11 +7,11 @@ Lightweight CLI for querying Loki, Prometheus/Mimir, and Tempo.
 **Requires Python 3.12+**
 
 ```bash
-# Install globally
-uv tool install git+https://github.com/pokgak/lgtm-cli
+# Run directly without installing
+uvx lgtm-cli --help
 
-# Or run directly without installing
-uvx --from git+https://github.com/pokgak/lgtm-cli lgtm --help
+# Or install globally
+uv tool install lgtm-cli
 ```
 
 ## Usage
