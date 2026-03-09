@@ -33,9 +33,33 @@ lgtm tempo search -q '{resource.service.name="api"}'
 lgtm -i production loki labels
 ```
 
+## Grafana Cloud Auto-Discovery
+
+Automatically discover all stacks in your Grafana Cloud org and generate config entries.
+
+**Requirements:** A Grafana Cloud Access Policy token with the `stacks:read` scope.
+Create one at: **Grafana Cloud → Administration → Cloud Access Policies**.
+
+```bash
+# Discover all accessible stacks
+GRAFANA_CLOUD_API_TOKEN=glc_xxx lgtm discover
+
+# Discover stacks for a specific org
+lgtm discover --org myorg --token glc_xxx
+
+# Preview without writing
+lgtm discover --dry-run
+
+# Overwrite existing entries
+lgtm discover --overwrite
+```
+
+This generates config entries for each active stack with Loki, Prometheus, and Tempo endpoints.
+Alerting is not included as it requires per-stack service account tokens.
+
 ## Configuration
 
-Create config at `~/.config/lgtm/config.yaml`:
+Create config at `~/.config/lgtm/config.yaml` (or use `lgtm discover` to generate it):
 
 ```yaml
 version: "1"
@@ -139,6 +163,15 @@ lgtm tempo tags                   # List available tags
 lgtm tempo tag-values <tag>       # List values for a tag
 lgtm tempo search                 # Search traces
 lgtm tempo trace <trace_id>       # Get trace by ID
+```
+
+### Discovery
+
+```bash
+lgtm discover                     # Discover Grafana Cloud stacks
+lgtm discover --org <slug>        # Discover stacks for a specific org
+lgtm discover --dry-run           # Preview without writing config
+lgtm instances                    # List configured instances
 ```
 
 ## Compatibility

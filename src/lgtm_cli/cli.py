@@ -4,9 +4,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import click
+import yaml
 
-from .config import load_config, DEFAULT_CONFIG_PATH
-from .client import LokiClient, PrometheusClient, TempoClient, AlertingClient
+from .config import load_config, generate_stack_instances, write_config, DEFAULT_CONFIG_PATH
+from .client import LokiClient, PrometheusClient, TempoClient, AlertingClient, GrafanaCloudClient
 
 
 # Best practice defaults
@@ -41,7 +42,7 @@ def output_error(msg: str):
 
 
 @click.group()
-@click.option("--config", "-c", type=click.Path(exists=True, path_type=Path), help="Config file path")
+@click.option("--config", "-c", type=click.Path(path_type=Path), help="Config file path")
 @click.option("--instance", "-i", help="Instance name from config")
 @click.pass_context
 def main(ctx, config: Path | None, instance: str | None):
@@ -53,13 +54,12 @@ def main(ctx, config: Path | None, instance: str | None):
     - Always filter by labels when possible
     """
     ctx.ensure_object(dict)
+    ctx.obj["config_path"] = config or DEFAULT_CONFIG_PATH
+    ctx.obj["instance_name"] = instance
     try:
         ctx.obj["config"] = load_config(config)
-        ctx.obj["instance_name"] = instance
-    except FileNotFoundError as e:
-        output_error(str(e))
-        output_error(f"Create a config file at {DEFAULT_CONFIG_PATH}")
-        sys.exit(1)
+    except FileNotFoundError:
+        ctx.obj["config"] = None
 
 
 # === LOKI COMMANDS ===
@@ -68,6 +68,10 @@ def main(ctx, config: Path | None, instance: str | None):
 @click.pass_context
 def loki(ctx):
     """Query Loki logs."""
+    if not ctx.obj["config"]:
+        output_error(f"Config file not found: {ctx.obj['config_path']}")
+        output_error("Create a config file or run 'lgtm discover' first")
+        sys.exit(1)
     instance = ctx.obj["config"].get_instance(ctx.obj["instance_name"])
     if not instance.loki:
         output_error(f"Loki not configured for instance '{instance.name}'")
@@ -196,6 +200,10 @@ def series(ctx, match: tuple[str, ...], start: str | None, end: str | None):
 @click.pass_context
 def prom(ctx):
     """Query Prometheus/Mimir metrics."""
+    if not ctx.obj["config"]:
+        output_error(f"Config file not found: {ctx.obj['config_path']}")
+        output_error("Create a config file or run 'lgtm discover' first")
+        sys.exit(1)
     instance = ctx.obj["config"].get_instance(ctx.obj["instance_name"])
     if not instance.prometheus:
         output_error(f"Prometheus not configured for instance '{instance.name}'")
@@ -340,6 +348,10 @@ def metadata(ctx, metric: str | None):
 @click.pass_context
 def tempo(ctx):
     """Query Tempo traces."""
+    if not ctx.obj["config"]:
+        output_error(f"Config file not found: {ctx.obj['config_path']}")
+        output_error("Create a config file or run 'lgtm discover' first")
+        sys.exit(1)
     instance = ctx.obj["config"].get_instance(ctx.obj["instance_name"])
     if not instance.tempo:
         output_error(f"Tempo not configured for instance '{instance.name}'")
@@ -483,6 +495,10 @@ def parse_matcher(matcher: str) -> dict:
 @click.pass_context
 def alerts(ctx):
     """Query Grafana Alerting/Alertmanager."""
+    if not ctx.obj["config"]:
+        output_error(f"Config file not found: {ctx.obj['config_path']}")
+        output_error("Create a config file or run 'lgtm discover' first")
+        sys.exit(1)
     instance = ctx.obj["config"].get_instance(ctx.obj["instance_name"])
     if not instance.alerting:
         output_error(f"Alerting not configured for instance '{instance.name}'")
@@ -649,6 +665,10 @@ def alerts_silence_delete(ctx, silence_id: str):
 @click.pass_context
 def instances(ctx):
     """List configured instances."""
+    if not ctx.obj["config"]:
+        output_error(f"Config file not found: {ctx.obj['config_path']}")
+        output_error("Create a config file or run 'lgtm discover' first")
+        sys.exit(1)
     config = ctx.obj["config"]
     result = {
         "default": config.default_instance,
@@ -662,6 +682,100 @@ def instances(ctx):
             "alerting": instance.alerting.url if instance.alerting else None,
         }
     output_json(result)
+
+
+@main.command()
+@click.option("--token", envvar="GRAFANA_CLOUD_API_TOKEN", required=True,
+              help="Grafana Cloud API token (or set GRAFANA_CLOUD_API_TOKEN env var)")
+@click.option("--org", default=None, help="Grafana Cloud org slug (optional, lists all accessible stacks if omitted)")
+@click.option("--token-env-var", default="GRAFANA_CLOUD_API_TOKEN",
+              help="Env var name to use in generated config for the token reference")
+@click.option("--overwrite", is_flag=True, help="Overwrite existing instances with same name")
+@click.option("--dry-run", is_flag=True, help="Print generated config without writing to file")
+@click.pass_context
+def discover(ctx, token: str, org: str | None, token_env_var: str, overwrite: bool, dry_run: bool):
+    """Discover Grafana Cloud stacks and add them to config.
+
+    Queries the Grafana Cloud API to find all active stacks and generates
+    instance configs with the correct endpoints and auth.
+
+    Requires a Grafana Cloud Access Policy token with the 'stacks:read' scope.
+    Create one at: Grafana Cloud > Administration > Cloud Access Policies.
+
+    Examples:
+
+      lgtm discover --token glc_xxx
+
+      lgtm discover --org myorg --token glc_xxx
+
+      GRAFANA_CLOUD_API_TOKEN=glc_xxx lgtm discover --dry-run
+    """
+    cloud_client = GrafanaCloudClient(token)
+
+    try:
+        if org:
+            click.echo(f"Fetching stacks for org '{org}'...")
+        else:
+            click.echo("Fetching accessible stacks...")
+        stacks = cloud_client.list_stacks(org)
+    except Exception as e:
+        output_error(f"Failed to fetch stacks: {e}")
+        sys.exit(1)
+
+    if not stacks:
+        click.echo("No stacks found.")
+        return
+
+    click.echo(f"Found {len(stacks)} stack(s)")
+
+    token_ref = f"${{{token_env_var}}}"
+    new_instances = generate_stack_instances(stacks, token_ref)
+
+    if not new_instances:
+        click.echo("No active stacks with configured services found.")
+        return
+
+    config_path = ctx.obj["config_path"]
+    if config_path.exists():
+        with open(config_path) as f:
+            existing = yaml.safe_load(f) or {}
+    else:
+        existing = {"version": "1", "instances": {}}
+
+    existing.setdefault("version", "1")
+    existing.setdefault("instances", {})
+
+    added = []
+    skipped = []
+    overwritten = []
+
+    for name, instance_config in new_instances.items():
+        if name in existing["instances"]:
+            if overwrite:
+                existing["instances"][name] = instance_config
+                overwritten.append(name)
+            else:
+                skipped.append(name)
+        else:
+            existing["instances"][name] = instance_config
+            added.append(name)
+
+    if dry_run:
+        click.echo("\n--- Generated config (dry run) ---")
+        click.echo(yaml.dump(existing, default_flow_style=False, sort_keys=False))
+        click.echo("---")
+    else:
+        write_config(config_path, existing)
+        click.echo(f"Config written to {config_path}")
+
+    prefix = "Would add" if dry_run else "Added"
+    if added:
+        click.echo(f"{prefix}: {', '.join(added)}")
+    if skipped:
+        click.echo(f"Skipped (already exist, use --overwrite): {', '.join(skipped)}")
+    if overwritten:
+        prefix = "Would overwrite" if dry_run else "Overwritten"
+        click.echo(f"{prefix}: {', '.join(overwritten)}")
 
 
 if __name__ == "__main__":

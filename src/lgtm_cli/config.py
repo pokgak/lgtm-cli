@@ -134,3 +134,55 @@ def load_config(path: Path | None = None) -> Config:
         default_instance=data.get("default_instance"),
         instances=instances,
     )
+
+
+def generate_stack_instances(stacks: list[dict], token_ref: str) -> dict[str, dict]:
+    """Generate instance config dicts from Grafana Cloud stack API responses."""
+    instances = {}
+    for stack in stacks:
+        if stack.get("status") != "active":
+            continue
+
+        slug = stack.get("slug")
+        if not slug:
+            continue
+        instance = {}
+
+        hl_id = stack.get("hlInstanceId", 0)
+        hl_url = stack.get("hlInstanceUrl", "")
+        if hl_id and hl_url:
+            instance["loki"] = {
+                "url": hl_url,
+                "username": str(hl_id),
+                "token": token_ref,
+            }
+
+        hm_id = stack.get("hmInstancePromId", 0)
+        hm_url = stack.get("hmInstancePromUrl", "")
+        if hm_id and hm_url:
+            instance["prometheus"] = {
+                "url": f"{hm_url.rstrip('/')}/api/prom",
+                "username": str(hm_id),
+                "token": token_ref,
+            }
+
+        ht_id = stack.get("htInstanceId", 0)
+        ht_url = stack.get("htInstanceUrl", "")
+        if ht_id and ht_url:
+            instance["tempo"] = {
+                "url": f"{ht_url.rstrip('/')}/tempo",
+                "username": str(ht_id),
+                "token": token_ref,
+            }
+
+        if instance:
+            instances[slug] = instance
+
+    return instances
+
+
+def write_config(path: Path, data: dict) -> None:
+    """Write config dict to YAML file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
