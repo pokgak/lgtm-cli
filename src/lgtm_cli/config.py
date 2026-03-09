@@ -173,13 +173,6 @@ def generate_stack_instances(stacks: list[dict], token_ref: str) -> dict[str, di
                 "token": token_ref,
             }
 
-        grafana_url = stack.get("url", "")
-        if grafana_url:
-            instance["alerting"] = {
-                "url": grafana_url,
-                "token": token_ref,
-            }
-
         if instance:
             instances[slug] = instance
 
