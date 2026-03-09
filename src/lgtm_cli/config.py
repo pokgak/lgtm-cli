@@ -96,7 +96,12 @@ def resolve_secret(value: str) -> str:
     env_pattern = r'\$\{([^}]+)\}'
     def replace_env(match):
         var_name = match.group(1)
-        return os.environ.get(var_name, "")
+        resolved = os.environ.get(var_name)
+        if resolved is None:
+            import click
+            click.echo(f"Warning: Environment variable '{var_name}' is not set", err=True)
+            return ""
+        return resolved
     return re.sub(env_pattern, replace_env, value)
 
 

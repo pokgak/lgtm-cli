@@ -62,6 +62,24 @@ def main(ctx, config: Path | None, instance: str | None):
         ctx.obj["config"] = None
 
 
+def get_instance_or_exit(ctx) -> "InstanceConfig":
+    """Get the requested instance from config, or exit with a helpful error."""
+    config = ctx.obj["config"]
+    instance_name = ctx.obj["instance_name"]
+    try:
+        return config.get_instance(instance_name)
+    except ValueError as e:
+        output_error(str(e))
+        available = ", ".join(config.instances.keys())
+        if available:
+            output_error(f"Available instances: {available}")
+        sys.exit(1)
+    except StopIteration:
+        output_error("No instances configured")
+        output_error("Add instances to your config file or run 'lgtm discover' first")
+        sys.exit(1)
+
+
 # === LOKI COMMANDS ===
 
 @main.group()
@@ -72,7 +90,7 @@ def loki(ctx):
         output_error(f"Config file not found: {ctx.obj['config_path']}")
         output_error("Create a config file or run 'lgtm discover' first")
         sys.exit(1)
-    instance = ctx.obj["config"].get_instance(ctx.obj["instance_name"])
+    instance = get_instance_or_exit(ctx)
     if not instance.loki:
         output_error(f"Loki not configured for instance '{instance.name}'")
         sys.exit(1)
@@ -204,7 +222,7 @@ def prom(ctx):
         output_error(f"Config file not found: {ctx.obj['config_path']}")
         output_error("Create a config file or run 'lgtm discover' first")
         sys.exit(1)
-    instance = ctx.obj["config"].get_instance(ctx.obj["instance_name"])
+    instance = get_instance_or_exit(ctx)
     if not instance.prometheus:
         output_error(f"Prometheus not configured for instance '{instance.name}'")
         sys.exit(1)
@@ -352,7 +370,7 @@ def tempo(ctx):
         output_error(f"Config file not found: {ctx.obj['config_path']}")
         output_error("Create a config file or run 'lgtm discover' first")
         sys.exit(1)
-    instance = ctx.obj["config"].get_instance(ctx.obj["instance_name"])
+    instance = get_instance_or_exit(ctx)
     if not instance.tempo:
         output_error(f"Tempo not configured for instance '{instance.name}'")
         sys.exit(1)
@@ -499,7 +517,7 @@ def alerts(ctx):
         output_error(f"Config file not found: {ctx.obj['config_path']}")
         output_error("Create a config file or run 'lgtm discover' first")
         sys.exit(1)
-    instance = ctx.obj["config"].get_instance(ctx.obj["instance_name"])
+    instance = get_instance_or_exit(ctx)
     if not instance.alerting:
         output_error(f"Alerting not configured for instance '{instance.name}'")
         sys.exit(1)
