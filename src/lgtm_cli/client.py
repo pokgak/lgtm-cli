@@ -175,6 +175,26 @@ class TempoClient(LGTMClient):
         return self.get(f"/api/search/tag/{tag}/values")
 
 
+class GrafanaCloudClient:
+    """Client for the Grafana Cloud management API."""
+
+    def __init__(self, token: str, timeout: float = 30.0):
+        self.token = token
+        self.base_url = "https://grafana.com/api"
+        self.timeout = timeout
+
+    def list_stacks(self, org_slug: str) -> list[dict]:
+        url = f"{self.base_url}/orgs/{org_slug}/instances"
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/json",
+        }
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.get(url, headers=headers)
+            response.raise_for_status()
+            return response.json()["items"]
+
+
 class AlertingClient(LGTMClient):
     BASE_PATH = "/api/alertmanager/grafana/api/v2"
 
