@@ -768,12 +768,14 @@ def discover(ctx, token: str, org: str | None, token_env_var: str, overwrite: bo
         write_config(config_path, existing)
         click.echo(f"Config written to {config_path}")
 
+    prefix = "Would add" if dry_run else "Added"
     if added:
-        click.echo(f"Added: {', '.join(added)}")
+        click.echo(f"{prefix}: {', '.join(added)}")
     if skipped:
         click.echo(f"Skipped (already exist, use --overwrite): {', '.join(skipped)}")
     if overwritten:
-        click.echo(f"Overwritten: {', '.join(overwritten)}")
+        prefix = "Would overwrite" if dry_run else "Overwritten"
+        click.echo(f"{prefix}: {', '.join(overwritten)}")
 
 
 if __name__ == "__main__":

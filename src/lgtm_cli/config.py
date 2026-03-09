@@ -143,7 +143,9 @@ def generate_stack_instances(stacks: list[dict], token_ref: str) -> dict[str, di
         if stack.get("status") != "active":
             continue
 
-        slug = stack["slug"]
+        slug = stack.get("slug")
+        if not slug:
+            continue
         instance = {}
 
         hl_id = stack.get("hlInstanceId", 0)

@@ -196,8 +196,9 @@ class GrafanaCloudClient:
             url = f"{self.base_url}/instances"
         all_items = []
         params: dict[str, str] = {}
+        max_pages = 100
         with httpx.Client(timeout=self.timeout) as client:
-            while True:
+            for _ in range(max_pages):
                 response = client.get(url, params=params, headers=self._get_headers())
                 response.raise_for_status()
                 data = response.json()
