@@ -183,16 +183,30 @@ class GrafanaCloudClient:
         self.base_url = "https://grafana.com/api"
         self.timeout = timeout
 
-    def list_stacks(self, org_slug: str) -> list[dict]:
-        url = f"{self.base_url}/orgs/{org_slug}/instances"
-        headers = {
+    def _get_headers(self) -> dict[str, str]:
+        return {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/json",
         }
+
+    def list_stacks(self, org_slug: str | None = None) -> list[dict]:
+        if org_slug:
+            url = f"{self.base_url}/orgs/{org_slug}/instances"
+        else:
+            url = f"{self.base_url}/instances"
+        all_items = []
+        params: dict[str, str] = {}
         with httpx.Client(timeout=self.timeout) as client:
-            response = client.get(url, headers=headers)
-            response.raise_for_status()
-            return response.json()["items"]
+            while True:
+                response = client.get(url, params=params, headers=self._get_headers())
+                response.raise_for_status()
+                data = response.json()
+                all_items.extend(data.get("items", []))
+                next_cursor = data.get("nextCursor", "")
+                if not next_cursor:
+                    break
+                params["cursor"] = next_cursor
+        return all_items
 
 
 class AlertingClient(LGTMClient):

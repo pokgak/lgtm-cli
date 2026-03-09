@@ -687,30 +687,36 @@ def instances(ctx):
 @main.command()
 @click.option("--token", envvar="GRAFANA_CLOUD_API_TOKEN", required=True,
               help="Grafana Cloud API token (or set GRAFANA_CLOUD_API_TOKEN env var)")
-@click.option("--org", required=True, help="Grafana Cloud org slug")
+@click.option("--org", default=None, help="Grafana Cloud org slug (optional, lists all accessible stacks if omitted)")
 @click.option("--token-env-var", default="GRAFANA_CLOUD_API_TOKEN",
               help="Env var name to use in generated config for the token reference")
 @click.option("--overwrite", is_flag=True, help="Overwrite existing instances with same name")
 @click.option("--dry-run", is_flag=True, help="Print generated config without writing to file")
 @click.pass_context
-def discover(ctx, token: str, org: str, token_env_var: str, overwrite: bool, dry_run: bool):
+def discover(ctx, token: str, org: str | None, token_env_var: str, overwrite: bool, dry_run: bool):
     """Discover Grafana Cloud stacks and add them to config.
 
-    Queries the Grafana Cloud API to find all active stacks in your org
-    and generates instance configs with the correct endpoints and auth.
+    Queries the Grafana Cloud API to find all active stacks and generates
+    instance configs with the correct endpoints and auth.
+
+    Requires a Grafana Cloud Access Policy token with the 'stacks:read' scope.
+    Create one at: Grafana Cloud > Administration > Cloud Access Policies.
 
     Examples:
 
+      lgtm discover --token glc_xxx
+
       lgtm discover --org myorg --token glc_xxx
 
-      GRAFANA_CLOUD_API_TOKEN=glc_xxx lgtm discover --org myorg
-
-      lgtm discover --org myorg --dry-run
+      GRAFANA_CLOUD_API_TOKEN=glc_xxx lgtm discover --dry-run
     """
     cloud_client = GrafanaCloudClient(token)
 
     try:
-        click.echo(f"Fetching stacks for org '{org}'...")
+        if org:
+            click.echo(f"Fetching stacks for org '{org}'...")
+        else:
+            click.echo("Fetching accessible stacks...")
         stacks = cloud_client.list_stacks(org)
     except Exception as e:
         output_error(f"Failed to fetch stacks: {e}")
