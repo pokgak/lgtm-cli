@@ -165,6 +165,17 @@ lgtm tempo search                 # Search traces
 lgtm tempo trace <trace_id>       # Get trace by ID
 ```
 
+### Alerts
+
+```bash
+lgtm alerts list                  # List firing alerts
+lgtm alerts groups                # List alerts grouped by receiver/labels
+lgtm alerts silences              # List all silences
+lgtm alerts silence-get <id>      # Get a specific silence
+lgtm alerts silence-create        # Create a new silence
+lgtm alerts silence-delete <id>   # Delete/expire a silence
+```
+
 ### Discovery
 
 ```bash
@@ -172,6 +183,52 @@ lgtm discover                     # Discover Grafana Cloud stacks
 lgtm discover --org <slug>        # Discover stacks for a specific org
 lgtm discover --dry-run           # Preview without writing config
 lgtm instances                    # List configured instances
+```
+
+## Agent Integration
+
+lgtm-cli is designed to be agent-friendly. All commands output JSON by default, and additional features help AI agents use the CLI programmatically.
+
+### Command Schema Discovery
+
+Agents can introspect the full command tree as JSON without parsing `--help` text:
+
+```bash
+lgtm schema              # Full schema with query syntax and defaults
+lgtm schema --compact    # Minimal schema (names and flags only, fewer tokens)
+```
+
+### Response Envelope
+
+Use the `--envelope` flag (or set `LGTM_ENVELOPE=1`) to wrap all responses in a consistent envelope:
+
+```bash
+lgtm --envelope loki query '{app="myapp"}'
+```
+
+```json
+{
+  "status": "success",
+  "data": { "..." },
+  "metadata": {
+    "command": "lgtm loki query",
+    "count": 42
+  }
+}
+```
+
+Errors in envelope mode include actionable suggestions:
+
+```json
+{
+  "status": "error",
+  "error_message": "Loki not configured for instance 'production'",
+  "metadata": { "command": "lgtm loki" },
+  "suggestions": [
+    "Add a 'loki' section to this instance in config",
+    "Or run 'lgtm discover' to auto-configure"
+  ]
+}
 ```
 
 ## Compatibility
