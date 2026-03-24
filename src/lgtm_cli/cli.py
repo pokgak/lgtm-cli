@@ -31,21 +31,75 @@ def get_default_times_unix(minutes: int = DEFAULT_TIME_RANGE_MINUTES) -> tuple[s
     return str(int(start.timestamp())), str(int(now.timestamp()))
 
 
-def output_json(data: dict):
-    """Output JSON data, pretty-printed."""
-    click.echo(json.dumps(data, indent=2))
+def _get_envelope(ctx) -> bool:
+    """Check if envelope mode is enabled."""
+    root_ctx = ctx.find_root()
+    return root_ctx.params.get("envelope", False)
 
 
-def output_error(msg: str):
-    """Output error message to stderr."""
-    click.echo(f"Error: {msg}", err=True)
+def _get_command_path(ctx) -> str:
+    """Get the full command path (e.g., 'lgtm loki query')."""
+    parts = []
+    current = ctx
+    while current:
+        if current.info_name:
+            parts.append(current.info_name)
+        current = current.parent
+    return " ".join(reversed(parts))
+
+
+def output_json(data, ctx=None):
+    """Output JSON data, optionally wrapped in an envelope."""
+    if ctx and _get_envelope(ctx):
+        count = None
+        if isinstance(data, list):
+            count = len(data)
+        elif isinstance(data, dict):
+            for key in ("result", "traces", "data"):
+                inner = data.get(key)
+                if inner is None:
+                    inner = data.get("data", {}).get("result") if key == "result" and isinstance(data.get("data"), dict) else None
+                if isinstance(inner, list):
+                    count = len(inner)
+                    break
+        envelope = {
+            "status": "success",
+            "data": data,
+            "metadata": {
+                "command": _get_command_path(ctx),
+            },
+        }
+        if count is not None:
+            envelope["metadata"]["count"] = count
+        click.echo(json.dumps(envelope, indent=2))
+    else:
+        click.echo(json.dumps(data, indent=2))
+
+
+def output_error(msg: str, suggestions: list[str] | None = None, ctx=None):
+    """Output error message to stderr, optionally as structured JSON."""
+    if ctx and _get_envelope(ctx):
+        error = {
+            "status": "error",
+            "error_message": msg,
+            "metadata": {
+                "command": _get_command_path(ctx),
+            },
+        }
+        if suggestions:
+            error["suggestions"] = suggestions
+        click.echo(json.dumps(error, indent=2), err=True)
+    else:
+        click.echo(f"Error: {msg}", err=True)
 
 
 @click.group()
 @click.option("--config", "-c", type=click.Path(path_type=Path), help="Config file path")
 @click.option("--instance", "-i", help="Instance name from config")
+@click.option("--envelope", is_flag=True, envvar="LGTM_ENVELOPE",
+              help="Wrap output in agent-friendly envelope with metadata (or set LGTM_ENVELOPE=1)")
 @click.pass_context
-def main(ctx, config: Path | None, instance: str | None):
+def main(ctx, config: Path | None, instance: str | None, envelope: bool):
     """LGTM CLI - Query Loki, Prometheus, and Tempo.
 
     Best practices are built-in:
@@ -69,30 +123,51 @@ def get_instance_or_exit(ctx) -> "InstanceConfig":
     try:
         return config.get_instance(instance_name)
     except ValueError as e:
-        output_error(str(e))
-        available = ", ".join(config.instances.keys())
-        if available:
-            output_error(f"Available instances: {available}")
+        available = list(config.instances.keys())
+        output_error(
+            str(e),
+            suggestions=[f"Available instances: {', '.join(available)}",
+                         "Use --instance/-i to select one"] if available else None,
+            ctx=ctx,
+        )
         sys.exit(1)
     except StopIteration:
-        output_error("No instances configured")
-        output_error("Add instances to your config file or run 'lgtm discover' first")
+        output_error(
+            "No instances configured",
+            suggestions=["Run 'lgtm discover' to auto-discover Grafana Cloud stacks",
+                         "Or manually add instances to ~/.config/lgtm/config.yaml"],
+            ctx=ctx,
+        )
         sys.exit(1)
 
 
 # === LOKI COMMANDS ===
+
+def _config_not_found_exit(ctx):
+    """Exit with config-not-found error."""
+    output_error(
+        f"Config file not found: {ctx.obj['config_path']}",
+        suggestions=["Run 'lgtm discover' to auto-discover Grafana Cloud stacks",
+                      "Or create a config file at ~/.config/lgtm/config.yaml"],
+        ctx=ctx,
+    )
+    sys.exit(1)
+
 
 @main.group()
 @click.pass_context
 def loki(ctx):
     """Query Loki logs."""
     if not ctx.obj["config"]:
-        output_error(f"Config file not found: {ctx.obj['config_path']}")
-        output_error("Create a config file or run 'lgtm discover' first")
-        sys.exit(1)
+        _config_not_found_exit(ctx)
     instance = get_instance_or_exit(ctx)
     if not instance.loki:
-        output_error(f"Loki not configured for instance '{instance.name}'")
+        output_error(
+            f"Loki not configured for instance '{instance.name}'",
+            suggestions=["Add a 'loki' section to this instance in config",
+                          "Or run 'lgtm discover' to auto-configure"],
+            ctx=ctx,
+        )
         sys.exit(1)
     ctx.obj["client"] = LokiClient(instance.loki)
 
@@ -124,9 +199,9 @@ def query(ctx, query: str, start: str | None, end: str | None, limit: int, direc
             limit=limit,
             direction=direction,
         )
-        output_json(result)
+        output_json(result, ctx)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), suggestions=["Check your LogQL syntax", "Use 'lgtm loki labels' to discover available labels"], ctx=ctx)
         sys.exit(1)
 
 
@@ -145,9 +220,9 @@ def instant(ctx, query: str, time: str | None):
     """
     try:
         result = ctx.obj["client"].query_instant(query, time)
-        output_json(result)
+        output_json(result, ctx)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), suggestions=["Check your LogQL syntax"], ctx=ctx)
         sys.exit(1)
 
 
@@ -162,9 +237,9 @@ def labels(ctx, start: str | None, end: str | None):
     """
     try:
         result = ctx.obj["client"].labels(start, end)
-        output_json(result)
+        output_json(result, ctx)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), ctx=ctx)
         sys.exit(1)
 
 
@@ -184,9 +259,9 @@ def label_values(ctx, label: str, start: str | None, end: str | None):
     """
     try:
         result = ctx.obj["client"].label_values(label, start, end)
-        output_json(result)
+        output_json(result, ctx)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), suggestions=["Use 'lgtm loki labels' to see available labels"], ctx=ctx)
         sys.exit(1)
 
 
@@ -206,9 +281,9 @@ def series(ctx, match: tuple[str, ...], start: str | None, end: str | None):
     """
     try:
         result = ctx.obj["client"].series(list(match), start, end)
-        output_json(result)
+        output_json(result, ctx)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), ctx=ctx)
         sys.exit(1)
 
 
@@ -219,12 +294,15 @@ def series(ctx, match: tuple[str, ...], start: str | None, end: str | None):
 def prom(ctx):
     """Query Prometheus/Mimir metrics."""
     if not ctx.obj["config"]:
-        output_error(f"Config file not found: {ctx.obj['config_path']}")
-        output_error("Create a config file or run 'lgtm discover' first")
-        sys.exit(1)
+        _config_not_found_exit(ctx)
     instance = get_instance_or_exit(ctx)
     if not instance.prometheus:
-        output_error(f"Prometheus not configured for instance '{instance.name}'")
+        output_error(
+            f"Prometheus not configured for instance '{instance.name}'",
+            suggestions=["Add a 'prometheus' section to this instance in config",
+                          "Or run 'lgtm discover' to auto-configure"],
+            ctx=ctx,
+        )
         sys.exit(1)
     ctx.obj["client"] = PrometheusClient(instance.prometheus)
 
@@ -244,9 +322,9 @@ def query(ctx, query: str, time: str | None):
     """
     try:
         result = ctx.obj["client"].query(query, time)
-        output_json(result)
+        output_json(result, ctx)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), suggestions=["Check your PromQL syntax", "Use 'lgtm prom labels' to discover available labels"], ctx=ctx)
         sys.exit(1)
 
 
@@ -273,9 +351,9 @@ def range(ctx, query: str, start: str | None, end: str | None, step: str):
             end=end or default_end,
             step=step,
         )
-        output_json(result)
+        output_json(result, ctx)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), suggestions=["Check your PromQL syntax"], ctx=ctx)
         sys.exit(1)
 
 
@@ -290,9 +368,9 @@ def labels(ctx, start: str | None, end: str | None):
     """
     try:
         result = ctx.obj["client"].labels(start, end)
-        output_json(result)
+        output_json(result, ctx)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), ctx=ctx)
         sys.exit(1)
 
 
@@ -312,9 +390,9 @@ def prom_label_values(ctx, label: str, start: str | None, end: str | None):
     """
     try:
         result = ctx.obj["client"].label_values(label, start, end)
-        output_json(result)
+        output_json(result, ctx)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), suggestions=["Use 'lgtm prom labels' to see available labels"], ctx=ctx)
         sys.exit(1)
 
 
@@ -334,9 +412,9 @@ def series(ctx, match: tuple[str, ...], start: str | None, end: str | None):
     """
     try:
         result = ctx.obj["client"].series(list(match), start, end)
-        output_json(result)
+        output_json(result, ctx)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), ctx=ctx)
         sys.exit(1)
 
 
@@ -354,9 +432,9 @@ def metadata(ctx, metric: str | None):
     """
     try:
         result = ctx.obj["client"].metadata(metric)
-        output_json(result)
+        output_json(result, ctx)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), ctx=ctx)
         sys.exit(1)
 
 
@@ -367,12 +445,15 @@ def metadata(ctx, metric: str | None):
 def tempo(ctx):
     """Query Tempo traces."""
     if not ctx.obj["config"]:
-        output_error(f"Config file not found: {ctx.obj['config_path']}")
-        output_error("Create a config file or run 'lgtm discover' first")
-        sys.exit(1)
+        _config_not_found_exit(ctx)
     instance = get_instance_or_exit(ctx)
     if not instance.tempo:
-        output_error(f"Tempo not configured for instance '{instance.name}'")
+        output_error(
+            f"Tempo not configured for instance '{instance.name}'",
+            suggestions=["Add a 'tempo' section to this instance in config",
+                          "Or run 'lgtm discover' to auto-configure"],
+            ctx=ctx,
+        )
         sys.exit(1)
     ctx.obj["client"] = TempoClient(instance.tempo)
 
@@ -391,9 +472,9 @@ def trace(ctx, trace_id: str):
     """
     try:
         result = ctx.obj["client"].trace(trace_id)
-        output_json(result)
+        output_json(result, ctx)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), ctx=ctx)
         sys.exit(1)
 
 
@@ -427,9 +508,9 @@ def search(ctx, query: str | None, start: str | None, end: str | None,
             max_duration=max_duration,
             limit=limit,
         )
-        output_json(result)
+        output_json(result, ctx)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), suggestions=["Check your TraceQL syntax", "Use 'lgtm tempo tags' to discover available tags"], ctx=ctx)
         sys.exit(1)
 
 
@@ -442,9 +523,9 @@ def tags(ctx):
     """
     try:
         result = ctx.obj["client"].tags()
-        output_json(result)
+        output_json(result, ctx)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), ctx=ctx)
         sys.exit(1)
 
 
@@ -462,9 +543,9 @@ def tag_values(ctx, tag: str):
     """
     try:
         result = ctx.obj["client"].tag_values(tag)
-        output_json(result)
+        output_json(result, ctx)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), suggestions=["Use 'lgtm tempo tags' to see available tags"], ctx=ctx)
         sys.exit(1)
 
 
@@ -514,12 +595,15 @@ def parse_matcher(matcher: str) -> dict:
 def alerts(ctx):
     """Query Grafana Alerting/Alertmanager."""
     if not ctx.obj["config"]:
-        output_error(f"Config file not found: {ctx.obj['config_path']}")
-        output_error("Create a config file or run 'lgtm discover' first")
-        sys.exit(1)
+        _config_not_found_exit(ctx)
     instance = get_instance_or_exit(ctx)
     if not instance.alerting:
-        output_error(f"Alerting not configured for instance '{instance.name}'")
+        output_error(
+            f"Alerting not configured for instance '{instance.name}'",
+            suggestions=["Add an 'alerting' section to this instance in config",
+                          "Or run 'lgtm discover' to auto-configure"],
+            ctx=ctx,
+        )
         sys.exit(1)
     ctx.obj["client"] = AlertingClient(instance.alerting)
 
@@ -550,9 +634,9 @@ def alerts_list(ctx, filters: tuple[str, ...], receiver: str | None, silenced: b
             inhibited=inhibited,
             active=active,
         )
-        output_json(result)
+        output_json(result, ctx)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), ctx=ctx)
         sys.exit(1)
 
 
@@ -574,9 +658,9 @@ def alerts_groups(ctx, filters: tuple[str, ...], receiver: str | None):
             filter=list(filters) if filters else None,
             receiver=receiver,
         )
-        output_json(result)
+        output_json(result, ctx)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), ctx=ctx)
         sys.exit(1)
 
 
@@ -596,9 +680,9 @@ def alerts_silences(ctx, filters: tuple[str, ...]):
         result = ctx.obj["client"].list_silences(
             filter=list(filters) if filters else None,
         )
-        output_json(result)
+        output_json(result, ctx)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), ctx=ctx)
         sys.exit(1)
 
 
@@ -614,9 +698,9 @@ def alerts_silence_get(ctx, silence_id: str):
     """
     try:
         result = ctx.obj["client"].get_silence(silence_id)
-        output_json(result)
+        output_json(result, ctx)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), suggestions=["Use 'lgtm alerts silences' to list all silences"], ctx=ctx)
         sys.exit(1)
 
 
@@ -650,12 +734,12 @@ def alerts_silence_create(ctx, matchers: tuple[str, ...], duration: str, comment
             created_by=created_by,
             comment=comment,
         )
-        output_json(result)
+        output_json(result, ctx)
     except click.BadParameter as e:
-        output_error(str(e))
+        output_error(str(e), ctx=ctx)
         sys.exit(1)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), ctx=ctx)
         sys.exit(1)
 
 
@@ -671,9 +755,9 @@ def alerts_silence_delete(ctx, silence_id: str):
     """
     try:
         ctx.obj["client"].delete_silence(silence_id)
-        click.echo(f"Silence {silence_id} deleted successfully")
+        output_json({"message": f"Silence {silence_id} deleted successfully"}, ctx)
     except Exception as e:
-        output_error(str(e))
+        output_error(str(e), suggestions=["Use 'lgtm alerts silences' to list all silences"], ctx=ctx)
         sys.exit(1)
 
 
@@ -684,9 +768,7 @@ def alerts_silence_delete(ctx, silence_id: str):
 def instances(ctx):
     """List configured instances."""
     if not ctx.obj["config"]:
-        output_error(f"Config file not found: {ctx.obj['config_path']}")
-        output_error("Create a config file or run 'lgtm discover' first")
-        sys.exit(1)
+        _config_not_found_exit(ctx)
     config = ctx.obj["config"]
     result = {
         "default": config.default_instance,
@@ -699,7 +781,135 @@ def instances(ctx):
             "tempo": instance.tempo.url if instance.tempo else None,
             "alerting": instance.alerting.url if instance.alerting else None,
         }
-    output_json(result)
+    output_json(result, ctx)
+
+
+def _build_command_schema(cmd: click.BaseCommand, name: str | None = None) -> dict:
+    """Recursively build a JSON schema from a Click command tree."""
+    schema = {
+        "name": name or cmd.name,
+        "description": (cmd.help or "").split("\n\n")[0].strip(),
+    }
+
+    if isinstance(cmd, click.MultiCommand):
+        children = []
+        for sub_name in cmd.list_commands(None):
+            sub_cmd = cmd.get_command(None, sub_name)
+            if sub_cmd:
+                children.append(_build_command_schema(sub_cmd, sub_name))
+        schema["subcommands"] = children
+    else:
+        args = []
+        opts = []
+        for param in cmd.params:
+            if isinstance(param, click.Argument):
+                args.append({
+                    "name": param.name,
+                    "required": param.required,
+                    "nargs": param.nargs,
+                })
+            elif isinstance(param, click.Option):
+                if param.name == "help":
+                    continue
+                opt = {
+                    "flags": list(param.opts + param.secondary_opts),
+                    "name": param.name,
+                    "type": param.type.name,
+                    "required": param.required,
+                }
+                if param.default is not None and param.default != () and isinstance(param.default, (str, int, float, bool)):
+                    opt["default"] = param.default
+                if param.help:
+                    opt["description"] = param.help
+                if isinstance(param.type, click.Choice):
+                    opt["choices"] = list(param.type.choices)
+                if param.is_flag:
+                    opt["type"] = "flag"
+                opts.append(opt)
+        if args:
+            schema["arguments"] = args
+        if opts:
+            schema["options"] = opts
+
+    return schema
+
+
+def _get_version() -> str:
+    try:
+        from importlib.metadata import version
+        return version("lgtm-cli")
+    except Exception:
+        return "unknown"
+
+
+@main.command()
+@click.option("--compact", is_flag=True, help="Minimal schema (names and flags only)")
+@click.pass_context
+def schema(ctx, compact: bool):
+    """Output the full command tree as JSON for agent discovery.
+
+    Agents can use this to understand available commands, arguments,
+    and options without parsing help text.
+
+    Examples:
+
+      lgtm schema
+
+      lgtm schema --compact
+    """
+    result = {
+        "version": _get_version(),
+        "description": "CLI for querying Loki, Prometheus/Mimir, Tempo, and Grafana Alerting",
+        "global_flags": [
+            {"flags": ["--config", "-c"], "description": "Config file path"},
+            {"flags": ["--instance", "-i"], "description": "Instance name from config"},
+            {"flags": ["--envelope"], "description": "Wrap output in agent-friendly envelope with metadata"},
+        ],
+        "commands": [],
+        "query_syntax": {
+            "loki": "LogQL - e.g., '{app=\"myapp\"} |= \"error\"', 'count_over_time({app=\"myapp\"}[5m])'",
+            "prometheus": "PromQL - e.g., 'up{job=\"api\"}', 'rate(http_requests_total[5m])'",
+            "tempo": "TraceQL - e.g., '{resource.service.name=\"api\"}', '{status=error}'",
+        },
+        "time_formats": {
+            "loki": "RFC3339 (e.g., 2024-01-15T10:00:00Z)",
+            "prometheus": "RFC3339 (e.g., 2024-01-15T10:00:00Z)",
+            "tempo": "Unix seconds (e.g., 1705312800)",
+        },
+        "defaults": {
+            "time_range": "15 minutes",
+            "loki_limit": DEFAULT_LOKI_LIMIT,
+            "tempo_limit": DEFAULT_TEMPO_LIMIT,
+            "prom_step": DEFAULT_PROM_STEP,
+        },
+    }
+
+    for sub_name in main.list_commands(ctx):
+        sub_cmd = main.get_command(ctx, sub_name)
+        if sub_cmd:
+            cmd_schema = _build_command_schema(sub_cmd, sub_name)
+            if compact:
+                cmd_schema = _compact_schema(cmd_schema)
+            result["commands"].append(cmd_schema)
+
+    if compact:
+        del result["query_syntax"]
+        del result["time_formats"]
+        del result["defaults"]
+
+    click.echo(json.dumps(result, indent=2))
+
+
+def _compact_schema(schema: dict) -> dict:
+    """Strip descriptions and non-essential fields for a compact schema."""
+    compact = {"name": schema["name"]}
+    if "subcommands" in schema:
+        compact["subcommands"] = [_compact_schema(s) for s in schema["subcommands"]]
+    if "arguments" in schema:
+        compact["arguments"] = [{"name": a["name"]} for a in schema["arguments"]]
+    if "options" in schema:
+        compact["options"] = [{"flags": o["flags"]} for o in schema["options"]]
+    return compact
 
 
 @main.command()
