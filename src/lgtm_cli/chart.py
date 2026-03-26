@@ -24,7 +24,7 @@ def render_chart(
         plt.show()
         return
 
-    w = width or plt.terminal_width()
+    w = width or int(plt.terminal_width() * 0.6)
     h = height
 
     if chart_type == "bar":
