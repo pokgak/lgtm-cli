@@ -72,7 +72,7 @@ def _render_timeseries(series: list[dict], title: str | None, width: int, height
         chart_lines = chart_str.split("\n")
 
         # Build legend entries
-        legend_items = [f"  {colors[i % len(colors)]}⣀⣀{reset} {label}" for i, label in enumerate(labels)]
+        legend_items = [f"  {colors[i % len(colors)]}▞▞{reset} {label}" for i, label in enumerate(labels)]
 
         # Place legend items starting from line 2 (after title), vertically
         gap = "  "
