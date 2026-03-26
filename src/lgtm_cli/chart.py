@@ -64,8 +64,8 @@ def _render_timeseries(series: list[dict], title: str | None, width: int, height
     plt.xlabel("Time")
     plt.show()
 
-    # Stats table
-    _print_stats_table(series, labels)
+    if len(series) > 1:
+        _print_stats_table(series, labels)
 
 
 # ---------------------------------------------------------------------------
