@@ -49,9 +49,10 @@ def _render_timeseries(series: list[dict], title: str | None, width: int, height
     plt.date_form("H:M")
     labels = _simplify_labels([s["label"] for s in series])
 
+    show_legend = len(series) > 1
     for s, label in zip(series, labels):
         dates = [datetime.fromtimestamp(t).strftime("%H:%M") for t in s["timestamps"]]
-        plt.plot(dates, s["values"], label=label)
+        plt.plot(dates, s["values"], label=label if show_legend else None)
 
     # Custom y-axis ticks with nice formatting
     all_vals = [v for s in series for v in s["values"]]
