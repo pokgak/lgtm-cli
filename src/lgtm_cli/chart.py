@@ -49,10 +49,13 @@ def _render_timeseries(series: list[dict], title: str | None, width: int, height
     plt.date_form("H:M")
     labels = _simplify_labels([s["label"] for s in series])
 
-    show_legend = len(series) > 1
+    colors = ["\033[32m", "\033[33m", "\033[34m", "\033[35m", "\033[36m",
+              "\033[31m", "\033[92m", "\033[93m", "\033[94m", "\033[95m"]
+    reset = "\033[0m"
+
     for s, label in zip(series, labels):
         dates = [datetime.fromtimestamp(t).strftime("%H:%M") for t in s["timestamps"]]
-        plt.plot(dates, s["values"], label=label if show_legend else None)
+        plt.plot(dates, s["values"])
 
     # Custom y-axis ticks with nice formatting
     all_vals = [v for s in series for v in s["values"]]
@@ -65,6 +68,7 @@ def _render_timeseries(series: list[dict], title: str | None, width: int, height
     plt.show()
 
     if len(series) > 1:
+        _print_legend(labels, colors, reset)
         _print_stats_table(series, labels)
 
 
@@ -443,6 +447,11 @@ def _nice_ticks(mn: float, mx: float, max_ticks: int = 8) -> list[float]:
         ticks.append(round(v, 10))
         v += spacing
     return ticks
+
+
+def _print_legend(labels: list[str], colors: list[str], reset: str) -> None:
+    items = [f"{colors[i % len(colors)]}━━{reset} {label}" for i, label in enumerate(labels)]
+    print("\n  " + "  ".join(items))
 
 
 def _print_stats_table(series: list[dict], labels: list[str]) -> None:
