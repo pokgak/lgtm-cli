@@ -35,6 +35,195 @@ def render_chart(
         _render_timeseries(series, title, w, h)
 
 
+def render_chart_to_file(
+    data: dict,
+    output_path: str,
+    chart_type: str = "timeseries",
+    title: str | None = None,
+    width: int | None = None,
+    height: int = 20,
+) -> None:
+    """Render a chart and save as an image file (PNG/SVG/HTML)."""
+    import io
+    import subprocess
+    import sys
+    from contextlib import redirect_stdout
+
+    # Capture all print output
+    buf = io.StringIO()
+    old_stdout = sys.stdout
+    sys.stdout = buf
+
+    try:
+        render_chart(data, chart_type=chart_type, title=title, width=width or 110, height=height)
+    finally:
+        sys.stdout = old_stdout
+
+    ansi_text = buf.getvalue()
+
+    if output_path.endswith(".html"):
+        _ansi_to_html_file(ansi_text, output_path)
+    elif output_path.endswith(".svg"):
+        _ansi_to_svg_file(ansi_text, output_path)
+    else:
+        # For .png and others, try aha (ANSI to HTML) + wkhtmltoimage, fallback to raw text
+        _ansi_to_image_file(ansi_text, output_path)
+
+
+def _ansi_to_html_file(ansi_text: str, path: str) -> None:
+    """Convert ANSI text to a standalone HTML file."""
+    import html as html_mod
+
+    lines = ansi_text.split("\n")
+    html_lines = []
+    for line in lines:
+        html_lines.append(_ansi_line_to_html(line))
+
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head><style>
+body {{ background: #1a1a2e; padding: 20px; }}
+pre {{ font-family: 'JetBrains Mono', 'Fira Code', 'Menlo', monospace; font-size: 14px; line-height: 1.2; color: #e0e0e0; }}
+</style></head>
+<body><pre>{"<br>".join(html_lines)}</pre></body>
+</html>"""
+
+    with open(path, "w") as f:
+        f.write(html_content)
+
+
+def _ansi_to_svg_file(ansi_text: str, path: str) -> None:
+    """Convert ANSI text to SVG using ansi2svg if available, fallback to HTML."""
+    import shutil
+    import subprocess
+
+    if shutil.which("ansi2svg"):
+        result = subprocess.run(
+            ["ansi2svg"], input=ansi_text, capture_output=True, text=True
+        )
+        with open(path, "w") as f:
+            f.write(result.stdout)
+    else:
+        # Fallback: save as HTML with .svg extension note
+        _ansi_to_html_file(ansi_text, path.replace(".svg", ".html"))
+        print(f"Note: ansi2svg not found, saved as HTML instead", file=__import__("sys").stderr)
+
+
+def _ansi_to_image_file(ansi_text: str, path: str) -> None:
+    """Convert ANSI to PNG. Tries multiple backends."""
+    # Just save the raw ANSI text - can be viewed with `cat`
+    with open(path, "w") as f:
+        f.write(ansi_text)
+
+
+def _ansi_line_to_html(line: str) -> str:
+    """Convert a single line with ANSI codes to HTML spans."""
+    import html as html_mod
+
+    result = []
+    i = 0
+    current_fg = None
+    current_bg = None
+
+    while i < len(line):
+        if line[i] == "\033" and i + 1 < len(line) and line[i + 1] == "[":
+            # Parse ANSI escape
+            end = line.find("m", i)
+            if end == -1:
+                result.append(html_mod.escape(line[i]))
+                i += 1
+                continue
+
+            code = line[i + 2 : end]
+            i = end + 1
+
+            if code == "0":
+                if current_fg or current_bg:
+                    result.append("</span>")
+                current_fg = None
+                current_bg = None
+            elif code.startswith("38;2;"):
+                # 24-bit foreground
+                parts = code.split(";")
+                if len(parts) >= 5:
+                    r, g, b = parts[2], parts[3], parts[4]
+                    if current_fg or current_bg:
+                        result.append("</span>")
+                    current_fg = f"color:rgb({r},{g},{b})"
+                    style = f"{current_fg};{current_bg}" if current_bg else current_fg
+                    result.append(f'<span style="{style}">')
+            elif code.startswith("48;2;"):
+                # 24-bit background
+                parts = code.split(";")
+                if len(parts) >= 5:
+                    r, g, b = parts[2], parts[3], parts[4]
+                    if current_fg or current_bg:
+                        result.append("</span>")
+                    current_bg = f"background:rgb({r},{g},{b})"
+                    style = f"{current_fg};{current_bg}" if current_fg else current_bg
+                    result.append(f'<span style="{style}">')
+            elif code.startswith("38;5;"):
+                # 256-color foreground
+                color_idx = int(code.split(";")[2])
+                hex_color = _ansi256_to_hex(color_idx)
+                if current_fg or current_bg:
+                    result.append("</span>")
+                current_fg = f"color:{hex_color}"
+                style = f"{current_fg};{current_bg}" if current_bg else current_fg
+                result.append(f'<span style="{style}">')
+            elif code.startswith("48;5;"):
+                # 256-color background
+                color_idx = int(code.split(";")[2])
+                hex_color = _ansi256_to_hex(color_idx)
+                if current_fg or current_bg:
+                    result.append("</span>")
+                current_bg = f"background:{hex_color}"
+                style = f"{current_fg};{current_bg}" if current_fg else current_bg
+                result.append(f'<span style="{style}">')
+            elif code == "1":
+                result.append("<b>")
+            else:
+                # Basic ANSI colors
+                fg_map = {
+                    "30": "#000", "31": "#c00", "32": "#0c0", "33": "#cc0",
+                    "34": "#00c", "35": "#c0c", "36": "#0cc", "37": "#ccc",
+                    "90": "#555", "91": "#f55", "92": "#5f5", "93": "#ff5",
+                    "94": "#55f", "95": "#f5f", "96": "#5ff", "97": "#fff",
+                }
+                if code in fg_map:
+                    if current_fg or current_bg:
+                        result.append("</span>")
+                    current_fg = f"color:{fg_map[code]}"
+                    style = f"{current_fg};{current_bg}" if current_bg else current_fg
+                    result.append(f'<span style="{style}">')
+        else:
+            result.append(html_mod.escape(line[i]))
+            i += 1
+
+    if current_fg or current_bg:
+        result.append("</span>")
+
+    return "".join(result)
+
+
+def _ansi256_to_hex(idx: int) -> str:
+    """Convert ANSI 256-color index to hex."""
+    if idx < 16:
+        basic = [
+            "#000", "#800", "#080", "#880", "#008", "#808", "#088", "#ccc",
+            "#888", "#f00", "#0f0", "#ff0", "#00f", "#f0f", "#0ff", "#fff",
+        ]
+        return basic[idx]
+    if idx < 232:
+        idx -= 16
+        r = (idx // 36) * 51
+        g = ((idx % 36) // 6) * 51
+        b = (idx % 6) * 51
+        return f"#{r:02x}{g:02x}{b:02x}"
+    gray = 8 + (idx - 232) * 10
+    return f"#{gray:02x}{gray:02x}{gray:02x}"
+
+
 # ---------------------------------------------------------------------------
 # Timeseries
 # ---------------------------------------------------------------------------
