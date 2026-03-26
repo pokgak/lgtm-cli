@@ -1006,5 +1006,49 @@ def discover(ctx, token: str, org: str | None, token_env_var: str, overwrite: bo
         click.echo(f"{prefix}: {', '.join(overwritten)}")
 
 
+@main.command()
+@click.argument("file", type=click.Path(exists=True))
+@click.option("--type", "chart_type", type=click.Choice(["timeseries", "bar", "heatmap"]),
+              default="timeseries", help="Chart type")
+@click.option("--title", "-t", default=None, help="Chart title")
+@click.option("--width", "-w", type=int, default=None, help="Chart width in columns")
+@click.option("--height", type=int, default=20, help="Chart height in rows")
+@click.option("--output", "-o", type=click.Path(), default=None, help="Save output to file (captures terminal output including ANSI codes)")
+def chart(file: str, chart_type: str, title: str | None, width: int | None, height: int, output: str | None):
+    """Render a Prometheus range query result as a terminal chart.
+
+    Reads a JSON file containing the output of `lgtm prom range`.
+
+    Examples:
+
+      lgtm prom range 'rate(http_requests_total[5m])' > data.json
+
+      lgtm chart data.json -t "Request Rate"
+
+      lgtm chart data.json --type bar -t "Top Services"
+
+      lgtm chart data.json --type heatmap -t "Latency Distribution"
+
+      lgtm chart data.json -t "Rate" -o chart.png
+    """
+    from .chart import render_chart
+
+    with open(file) as f:
+        data = json.load(f)
+
+    # Handle both raw Prometheus response and envelope format
+    if "data" in data and "result" not in data.get("data", {}):
+        inner = data["data"]
+        if isinstance(inner, dict) and "data" in inner:
+            data = inner
+
+    if output:
+        from .chart import render_chart_to_file
+        render_chart_to_file(data, output, chart_type=chart_type, title=title, width=width, height=height)
+        click.echo(f"Chart saved to {output}")
+    else:
+        render_chart(data, chart_type=chart_type, title=title, width=width, height=height)
+
+
 if __name__ == "__main__":
     main()
