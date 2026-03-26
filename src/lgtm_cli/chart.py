@@ -116,7 +116,7 @@ def _render_heatmap(series: list[dict], title: str | None, width: int, height: i
     # Compute deltas for cumulative histogram buckets
     is_cumulative = _detect_cumulative(sorted_series)
     if is_cumulative:
-        delta_values = []
+        delta_values: list[list[float]] = []
         for i, s in enumerate(sorted_series):
             if i == 0:
                 delta_values.append(s["values"])
@@ -130,30 +130,111 @@ def _render_heatmap(series: list[dict], title: str | None, width: int, height: i
 
     bucket_labels = [_extract_bucket_label(s["label"]) for s in sorted_series]
     timestamps = sorted_series[0]["timestamps"]
+    num_cols = len(timestamps)
 
-    # Build matrix (rows = buckets, cols = time)
-    matrix = delta_values
+    # Layout
+    label_width = max(len(l) for l in bucket_labels)
+    cell_area = max(width - label_width - 2, 20)
 
-    plt.clear_figure()
-    plt.plot_size(width, height)
-    plt.theme("dark")
+    # Stretch or downsample to fill width
+    if num_cols > cell_area:
+        step = math.ceil(num_cols / cell_area)
+        cell_width = 1
+    else:
+        step = 1
+        cell_width = max(1, cell_area // num_cols)
+
+    # Build grid
+    grid: list[list[float]] = []
+    for row in delta_values:
+        if step > 1:
+            grid.append([max(row[i:i + step]) for i in range(0, num_cols, step)])
+        else:
+            grid.append(list(row))
+
+    effective_cols = len(grid[0])
+
+    # Global min/max for normalization (excluding zeros)
+    all_vals = [v for row in grid for v in row if v > 0]
+    global_max = max(all_vals) if all_vals else 1
+    global_min = min(all_vals) if all_vals else 0
+
+    # Color ramp: blue -> cyan -> green -> yellow -> red
+    color_ramp = [
+        (0, 0, 80),      # dark blue
+        (0, 80, 160),     # blue
+        (0, 160, 160),    # cyan
+        (0, 180, 80),     # green
+        (160, 180, 0),    # yellow
+        (220, 120, 0),    # orange
+        (220, 40, 0),     # red
+        (255, 255, 255),  # white (hottest)
+    ]
+
     if title:
-        plt.title(title)
+        print(f"\033[1m{title}\033[0m")
+        print()
 
-    plt.matrix_plot(matrix)
-    plt.yticks(list(range(len(bucket_labels))), bucket_labels)
+    # Render rows from top (highest bucket) to bottom (lowest)
+    for ri in range(len(sorted_series) - 1, -1, -1):
+        label = bucket_labels[ri].rjust(label_width)
+        row = grid[ri]
+        cells = ""
+        for v in row:
+            r, g, b = _heat_color(v, global_min, global_max, color_ramp)
+            cells += f"\033[48;2;{r};{g};{b}m{' ' * cell_width}\033[0m"
+        print(f"{label} {cells}")
 
-    # Time axis ticks
-    n = len(timestamps)
-    tick_count = min(5, n)
-    if tick_count > 1:
-        indices = [int(i * (n - 1) / (tick_count - 1)) for i in range(tick_count)]
-        time_labels = [datetime.fromtimestamp(timestamps[i]).strftime("%H:%M") for i in indices]
-        plt.xticks(indices, time_labels)
+    # Time axis
+    first_ts = datetime.fromtimestamp(timestamps[0]).strftime("%H:%M")
+    mid_ts = datetime.fromtimestamp(timestamps[num_cols // 2]).strftime("%H:%M")
+    last_ts = datetime.fromtimestamp(timestamps[-1]).strftime("%H:%M")
+    display_width = effective_cols * cell_width
+    gap1 = max(0, display_width // 2 - len(first_ts) - len(mid_ts) // 2)
+    gap2 = max(0, display_width - len(first_ts) - gap1 - len(mid_ts) - len(last_ts))
+    print(f"{' ' * label_width} {first_ts}{' ' * gap1}{mid_ts}{' ' * gap2}{last_ts}")
 
-    plt.xlabel("Time")
-    plt.ylabel("Bucket")
-    plt.show()
+    # Legend bar
+    legend_width = min(30, display_width)
+    legend = ""
+    for i in range(legend_width):
+        frac = i / (legend_width - 1)
+        r, g, b = _interpolate_ramp(frac, color_ramp)
+        legend += f"\033[48;2;{r};{g};{b}m \033[0m"
+    print(f"\n{' ' * label_width} {legend}")
+    print(f"{' ' * label_width} {_fmt(global_min)}{' ' * (legend_width - len(_fmt(global_min)) - len(_fmt(global_max)))}{_fmt(global_max)}")
+
+
+def _heat_color(
+    value: float, mn: float, mx: float, ramp: list[tuple[int, int, int]]
+) -> tuple[int, int, int]:
+    """Map a value to an RGB color using the color ramp."""
+    if value <= 0:
+        return (0, 0, 0)  # black for zero
+
+    # Log scale for better contrast
+    log_min = math.log1p(mn) if mn > 0 else 0
+    log_max = math.log1p(mx)
+    log_val = math.log1p(value)
+    log_range = log_max - log_min or 1
+    frac = max(0, min(1, (log_val - log_min) / log_range))
+
+    return _interpolate_ramp(frac, ramp)
+
+
+def _interpolate_ramp(
+    frac: float, ramp: list[tuple[int, int, int]]
+) -> tuple[int, int, int]:
+    """Interpolate between colors in a ramp."""
+    n = len(ramp) - 1
+    idx = frac * n
+    lo = int(idx)
+    hi = min(lo + 1, n)
+    t = idx - lo
+    r = int(ramp[lo][0] + t * (ramp[hi][0] - ramp[lo][0]))
+    g = int(ramp[lo][1] + t * (ramp[hi][1] - ramp[lo][1]))
+    b = int(ramp[lo][2] + t * (ramp[hi][2] - ramp[lo][2]))
+    return (r, g, b)
 
 
 # ---------------------------------------------------------------------------
