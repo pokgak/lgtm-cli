@@ -1006,5 +1006,41 @@ def discover(ctx, token: str, org: str | None, token_env_var: str, overwrite: bo
         click.echo(f"{prefix}: {', '.join(overwritten)}")
 
 
+@main.command()
+@click.argument("file", type=click.Path(exists=True))
+@click.option("--type", "chart_type", type=click.Choice(["timeseries", "bar", "heatmap"]),
+              default="timeseries", help="Chart type")
+@click.option("--title", "-t", default=None, help="Chart title")
+@click.option("--width", "-w", type=int, default=None, help="Chart width in columns")
+@click.option("--height", type=int, default=20, help="Chart height in rows")
+def chart(file: str, chart_type: str, title: str | None, width: int | None, height: int):
+    """Render a Prometheus range query result as a terminal chart.
+
+    Reads a JSON file containing the output of `lgtm prom range`.
+
+    Examples:
+
+      lgtm prom range 'rate(http_requests_total[5m])' > data.json
+
+      lgtm chart data.json -t "Request Rate"
+
+      lgtm chart data.json --type bar -t "Top Services"
+
+      lgtm chart data.json --type heatmap -t "Latency Distribution"
+    """
+    from .chart import render_chart
+
+    with open(file) as f:
+        data = json.load(f)
+
+    # Handle both raw Prometheus response and envelope format
+    if "data" in data and "result" not in data.get("data", {}):
+        inner = data["data"]
+        if isinstance(inner, dict) and "data" in inner:
+            data = inner
+
+    render_chart(data, chart_type=chart_type, title=title, width=width, height=height)
+
+
 if __name__ == "__main__":
     main()
