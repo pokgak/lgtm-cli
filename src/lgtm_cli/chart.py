@@ -65,11 +65,27 @@ def _render_timeseries(series: list[dict], title: str | None, width: int, height
         plt.yticks(ticks, [_fmt(t) for t in ticks])
 
     plt.xlabel("Time")
-    plt.show()
 
     if len(series) > 1:
-        _print_legend(labels, colors, reset)
+        # Capture chart output and render legend on the right side
+        chart_str = plt.build()
+        chart_lines = chart_str.split("\n")
+
+        # Build legend entries
+        legend_items = [f"  {colors[i % len(colors)]}━━{reset} {label}" for i, label in enumerate(labels)]
+
+        # Place legend items starting from line 2 (after title), vertically
+        gap = "  "
+        for i, line in enumerate(chart_lines):
+            legend_idx = i - 1  # start from second line
+            if 0 <= legend_idx < len(legend_items):
+                print(f"{line}{gap}{legend_items[legend_idx]}")
+            else:
+                print(line)
+
         _print_stats_table(series, labels)
+    else:
+        plt.show()
 
 
 # ---------------------------------------------------------------------------
