@@ -48,20 +48,24 @@ def _get_command_path(ctx) -> str:
     return " ".join(reversed(parts))
 
 
-def output_json(data, ctx=None):
+def _count_results(data) -> int | None:
+    """Extract result count from API response data."""
+    if isinstance(data, list):
+        return len(data)
+    if isinstance(data, dict):
+        for key in ("result", "traces", "data"):
+            inner = data.get(key)
+            if inner is None:
+                inner = data.get("data", {}).get("result") if key == "result" and isinstance(data.get("data"), dict) else None
+            if isinstance(inner, list):
+                return len(inner)
+    return None
+
+
+def output_json(data, ctx=None, hints: list[str] | None = None):
     """Output JSON data, optionally wrapped in an envelope."""
     if ctx and _get_envelope(ctx):
-        count = None
-        if isinstance(data, list):
-            count = len(data)
-        elif isinstance(data, dict):
-            for key in ("result", "traces", "data"):
-                inner = data.get(key)
-                if inner is None:
-                    inner = data.get("data", {}).get("result") if key == "result" and isinstance(data.get("data"), dict) else None
-                if isinstance(inner, list):
-                    count = len(inner)
-                    break
+        count = _count_results(data)
         envelope = {
             "status": "success",
             "data": data,
@@ -71,13 +75,19 @@ def output_json(data, ctx=None):
         }
         if count is not None:
             envelope["metadata"]["count"] = count
+            if count == 0:
+                envelope["metadata"]["empty"] = True
+                envelope["metadata"]["message"] = "No results found"
+        if hints:
+            envelope["hints"] = hints
         click.echo(json.dumps(envelope, indent=2))
     else:
         click.echo(json.dumps(data, indent=2))
 
 
 def output_error(msg: str, suggestions: list[str] | None = None, ctx=None):
-    """Output error message to stderr, optionally as structured JSON."""
+    """Output error message. In envelope mode, writes structured JSON to stdout
+    so agents always see it (AXI principle: errors to stdout, not stderr)."""
     if ctx and _get_envelope(ctx):
         error = {
             "status": "error",
@@ -88,7 +98,7 @@ def output_error(msg: str, suggestions: list[str] | None = None, ctx=None):
         }
         if suggestions:
             error["suggestions"] = suggestions
-        click.echo(json.dumps(error, indent=2), err=True)
+        click.echo(json.dumps(error, indent=2))
     else:
         click.echo(f"Error: {msg}", err=True)
 
@@ -199,7 +209,14 @@ def query(ctx, query: str, start: str | None, end: str | None, limit: int, direc
             limit=limit,
             direction=direction,
         )
-        output_json(result, ctx)
+        count = _count_results(result)
+        hints = [
+            "narrow results → add label filter or line filter e.g. '|= \"error\"'",
+            "aggregate → lgtm loki instant 'count_over_time({...}[5m])'",
+        ]
+        if count is not None and count >= limit:
+            hints.insert(0, f"limit of {limit} reached → use --limit to increase or narrow your query")
+        output_json(result, ctx, hints=hints)
     except Exception as e:
         output_error(str(e), suggestions=["Check your LogQL syntax", "Use 'lgtm loki labels' to discover available labels"], ctx=ctx)
         sys.exit(1)
@@ -220,7 +237,11 @@ def instant(ctx, query: str, time: str | None):
     """
     try:
         result = ctx.obj["client"].query_instant(query, time)
-        output_json(result, ctx)
+        hints = [
+            "range query → lgtm loki query '{...}' to see raw logs",
+            "break down → add 'by (label)' to your aggregation",
+        ]
+        output_json(result, ctx, hints=hints)
     except Exception as e:
         output_error(str(e), suggestions=["Check your LogQL syntax"], ctx=ctx)
         sys.exit(1)
@@ -237,7 +258,8 @@ def labels(ctx, start: str | None, end: str | None):
     """
     try:
         result = ctx.obj["client"].labels(start, end)
-        output_json(result, ctx)
+        hints = ["get values → lgtm loki label-values <label>"]
+        output_json(result, ctx, hints=hints)
     except Exception as e:
         output_error(str(e), ctx=ctx)
         sys.exit(1)
@@ -259,7 +281,11 @@ def label_values(ctx, label: str, start: str | None, end: str | None):
     """
     try:
         result = ctx.obj["client"].label_values(label, start, end)
-        output_json(result, ctx)
+        hints = [
+            f"query with label → lgtm loki query '{{{label}=\"<value>\"}}'",
+            "see all labels → lgtm loki labels",
+        ]
+        output_json(result, ctx, hints=hints)
     except Exception as e:
         output_error(str(e), suggestions=["Use 'lgtm loki labels' to see available labels"], ctx=ctx)
         sys.exit(1)
@@ -281,7 +307,8 @@ def series(ctx, match: tuple[str, ...], start: str | None, end: str | None):
     """
     try:
         result = ctx.obj["client"].series(list(match), start, end)
-        output_json(result, ctx)
+        hints = ["query logs → lgtm loki query '<selector>'"]
+        output_json(result, ctx, hints=hints)
     except Exception as e:
         output_error(str(e), ctx=ctx)
         sys.exit(1)
@@ -322,7 +349,11 @@ def query(ctx, query: str, time: str | None):
     """
     try:
         result = ctx.obj["client"].query(query, time)
-        output_json(result, ctx)
+        hints = [
+            "time series → lgtm prom range '<query>' to see values over time",
+            "visualize → pipe range output to 'lgtm chart'",
+        ]
+        output_json(result, ctx, hints=hints)
     except Exception as e:
         output_error(str(e), suggestions=["Check your PromQL syntax", "Use 'lgtm prom labels' to discover available labels"], ctx=ctx)
         sys.exit(1)
@@ -351,7 +382,12 @@ def range(ctx, query: str, start: str | None, end: str | None, step: str):
             end=end or default_end,
             step=step,
         )
-        output_json(result, ctx)
+        hints = [
+            "visualize → save output to file, then 'lgtm chart <file> -t \"Title\"'",
+            "finer resolution → use --step 15s or --step 30s",
+            "instant value → lgtm prom query '<query>' for current point-in-time",
+        ]
+        output_json(result, ctx, hints=hints)
     except Exception as e:
         output_error(str(e), suggestions=["Check your PromQL syntax"], ctx=ctx)
         sys.exit(1)
@@ -368,7 +404,11 @@ def labels(ctx, start: str | None, end: str | None):
     """
     try:
         result = ctx.obj["client"].labels(start, end)
-        output_json(result, ctx)
+        hints = [
+            "get values → lgtm prom label-values <label>",
+            "list metric names → lgtm prom label-values __name__",
+        ]
+        output_json(result, ctx, hints=hints)
     except Exception as e:
         output_error(str(e), ctx=ctx)
         sys.exit(1)
@@ -390,7 +430,11 @@ def prom_label_values(ctx, label: str, start: str | None, end: str | None):
     """
     try:
         result = ctx.obj["client"].label_values(label, start, end)
-        output_json(result, ctx)
+        hints = [
+            f"query with label → lgtm prom query '<metric>{{{label}=\"<value>\"}}'",
+            "see all labels → lgtm prom labels",
+        ]
+        output_json(result, ctx, hints=hints)
     except Exception as e:
         output_error(str(e), suggestions=["Use 'lgtm prom labels' to see available labels"], ctx=ctx)
         sys.exit(1)
@@ -412,7 +456,8 @@ def series(ctx, match: tuple[str, ...], start: str | None, end: str | None):
     """
     try:
         result = ctx.obj["client"].series(list(match), start, end)
-        output_json(result, ctx)
+        hints = ["query metric → lgtm prom query '<metric>{<labels>}'"]
+        output_json(result, ctx, hints=hints)
     except Exception as e:
         output_error(str(e), ctx=ctx)
         sys.exit(1)
@@ -432,7 +477,10 @@ def metadata(ctx, metric: str | None):
     """
     try:
         result = ctx.obj["client"].metadata(metric)
-        output_json(result, ctx)
+        hints = ["query metric → lgtm prom query '<metric_name>'"]
+        if not metric:
+            hints.insert(0, "filter by metric → lgtm prom metadata --metric <name>")
+        output_json(result, ctx, hints=hints)
     except Exception as e:
         output_error(str(e), ctx=ctx)
         sys.exit(1)
@@ -472,7 +520,11 @@ def trace(ctx, trace_id: str):
     """
     try:
         result = ctx.obj["client"].trace(trace_id)
-        output_json(result, ctx)
+        hints = [
+            "search related → lgtm tempo search -q '{resource.service.name=\"<service>\"}'",
+            "find logs → lgtm loki query '{traceID=\"" + trace_id + "\"}'",
+        ]
+        output_json(result, ctx, hints=hints)
     except Exception as e:
         output_error(str(e), ctx=ctx)
         sys.exit(1)
@@ -508,7 +560,14 @@ def search(ctx, query: str | None, start: str | None, end: str | None,
             max_duration=max_duration,
             limit=limit,
         )
-        output_json(result, ctx)
+        count = _count_results(result)
+        hints = [
+            "view trace → lgtm tempo trace <traceID>",
+            "filter slow → add --min-duration 1s",
+        ]
+        if count is not None and count >= limit:
+            hints.insert(0, f"limit of {limit} reached → use --limit to increase or narrow your query")
+        output_json(result, ctx, hints=hints)
     except Exception as e:
         output_error(str(e), suggestions=["Check your TraceQL syntax", "Use 'lgtm tempo tags' to discover available tags"], ctx=ctx)
         sys.exit(1)
@@ -523,7 +582,8 @@ def tags(ctx):
     """
     try:
         result = ctx.obj["client"].tags()
-        output_json(result, ctx)
+        hints = ["get values → lgtm tempo tag-values <tag>"]
+        output_json(result, ctx, hints=hints)
     except Exception as e:
         output_error(str(e), ctx=ctx)
         sys.exit(1)
@@ -543,7 +603,11 @@ def tag_values(ctx, tag: str):
     """
     try:
         result = ctx.obj["client"].tag_values(tag)
-        output_json(result, ctx)
+        hints = [
+            f"search with tag → lgtm tempo search -q '{{resource.{tag}=\"<value>\"}}'",
+            "see all tags → lgtm tempo tags",
+        ]
+        output_json(result, ctx, hints=hints)
     except Exception as e:
         output_error(str(e), suggestions=["Use 'lgtm tempo tags' to see available tags"], ctx=ctx)
         sys.exit(1)
@@ -634,7 +698,12 @@ def alerts_list(ctx, filters: tuple[str, ...], receiver: str | None, silenced: b
             inhibited=inhibited,
             active=active,
         )
-        output_json(result, ctx)
+        hints = [
+            "silence alert → lgtm alerts silence-create --matcher 'alertname=<name>' --duration 2h --comment '<reason>' --created-by '<you>'",
+            "group view → lgtm alerts groups",
+            "filter → lgtm alerts list --filter 'severity=critical'",
+        ]
+        output_json(result, ctx, hints=hints)
     except Exception as e:
         output_error(str(e), ctx=ctx)
         sys.exit(1)
@@ -658,7 +727,11 @@ def alerts_groups(ctx, filters: tuple[str, ...], receiver: str | None):
             filter=list(filters) if filters else None,
             receiver=receiver,
         )
-        output_json(result, ctx)
+        hints = [
+            "flat list → lgtm alerts list",
+            "filter → lgtm alerts groups --filter 'severity=critical'",
+        ]
+        output_json(result, ctx, hints=hints)
     except Exception as e:
         output_error(str(e), ctx=ctx)
         sys.exit(1)
@@ -680,7 +753,12 @@ def alerts_silences(ctx, filters: tuple[str, ...]):
         result = ctx.obj["client"].list_silences(
             filter=list(filters) if filters else None,
         )
-        output_json(result, ctx)
+        hints = [
+            "view silence → lgtm alerts silence-get <id>",
+            "delete silence → lgtm alerts silence-delete <id>",
+            "create silence → lgtm alerts silence-create --matcher 'alertname=<name>' --duration 2h --comment '<reason>' --created-by '<you>'",
+        ]
+        output_json(result, ctx, hints=hints)
     except Exception as e:
         output_error(str(e), ctx=ctx)
         sys.exit(1)
@@ -698,7 +776,11 @@ def alerts_silence_get(ctx, silence_id: str):
     """
     try:
         result = ctx.obj["client"].get_silence(silence_id)
-        output_json(result, ctx)
+        hints = [
+            f"delete this silence → lgtm alerts silence-delete {silence_id}",
+            "list all silences → lgtm alerts silences",
+        ]
+        output_json(result, ctx, hints=hints)
     except Exception as e:
         output_error(str(e), suggestions=["Use 'lgtm alerts silences' to list all silences"], ctx=ctx)
         sys.exit(1)
@@ -734,7 +816,11 @@ def alerts_silence_create(ctx, matchers: tuple[str, ...], duration: str, comment
             created_by=created_by,
             comment=comment,
         )
-        output_json(result, ctx)
+        hints = [
+            "list silences → lgtm alerts silences",
+            "delete this silence → lgtm alerts silence-delete <silenceID from response>",
+        ]
+        output_json(result, ctx, hints=hints)
     except click.BadParameter as e:
         output_error(str(e), ctx=ctx)
         sys.exit(1)
@@ -755,7 +841,8 @@ def alerts_silence_delete(ctx, silence_id: str):
     """
     try:
         ctx.obj["client"].delete_silence(silence_id)
-        output_json({"message": f"Silence {silence_id} deleted successfully"}, ctx)
+        hints = ["list silences → lgtm alerts silences"]
+        output_json({"message": f"Silence {silence_id} deleted successfully"}, ctx, hints=hints)
     except Exception as e:
         output_error(str(e), suggestions=["Use 'lgtm alerts silences' to list all silences"], ctx=ctx)
         sys.exit(1)
@@ -781,7 +868,13 @@ def instances(ctx):
             "tempo": instance.tempo.url if instance.tempo else None,
             "alerting": instance.alerting.url if instance.alerting else None,
         }
-    output_json(result, ctx)
+    hints = [
+        "query logs → lgtm -i <instance> loki query '{app=\"<app>\"}'",
+        "query metrics → lgtm -i <instance> prom query 'up'",
+        "search traces → lgtm -i <instance> tempo search",
+        "check alerts → lgtm -i <instance> alerts list",
+    ]
+    output_json(result, ctx, hints=hints)
 
 
 def _build_command_schema(cmd: click.BaseCommand, name: str | None = None) -> dict:
