@@ -863,10 +863,10 @@ def grafana(ctx):
     Example config:
 
       instances:
-        primeintellect:
+        myorg:
           grafana:
-            url: https://primeintellect.grafana.net
-            token: ${GRAFANA_PRIMEINTELLECT_SA_TOKEN}
+            url: https://myorg.grafana.net
+            token: ${GRAFANA_SA_TOKEN}
     """
     if not ctx.obj["config"]:
         _config_not_found_exit(ctx)
@@ -895,11 +895,11 @@ def grafana_datasources(ctx, ds_type: str | None):
 
     Examples:
 
-      lgtm -i primeintellect grafana datasources
+      lgtm -i myorg grafana datasources
 
-      lgtm -i primeintellect grafana datasources --type prometheus
+      lgtm -i myorg grafana datasources --type prometheus
 
-      lgtm -i primeintellect grafana datasources --type loki
+      lgtm -i myorg grafana datasources --type loki
     """
     try:
         result = ctx.obj["grafana_client"].list_datasources()
@@ -924,7 +924,7 @@ def grafana_datasource(ctx, uid: str):
 
     Examples:
 
-      lgtm -i primeintellect grafana datasource af7yg1y2po1s0e
+      lgtm -i myorg grafana datasource abc123def456
     """
     try:
         result = ctx.obj["grafana_client"].get_datasource(uid)
@@ -951,9 +951,9 @@ def grafana_loki(ctx, uid: str):
 
     Examples:
 
-      lgtm -i primeintellect grafana loki <uid> query '{app="myapp"}'
+      lgtm -i myorg grafana loki <uid> query '{app="myapp"}'
 
-      lgtm -i primeintellect grafana loki <uid> labels
+      lgtm -i myorg grafana loki <uid> labels
     """
     proxy_config = ctx.obj["grafana_client"].proxy_service_config(uid)
     ctx.obj["client"] = LokiClient(proxy_config)
@@ -972,9 +972,9 @@ def grafana_prom(ctx, uid: str):
 
     Examples:
 
-      lgtm -i primeintellect grafana prom <uid> query 'up'
+      lgtm -i myorg grafana prom <uid> query 'up'
 
-      lgtm -i primeintellect grafana prom <uid> range 'rate(http_requests_total[5m])'
+      lgtm -i myorg grafana prom <uid> range 'rate(http_requests_total[5m])'
     """
     proxy_config = ctx.obj["grafana_client"].proxy_service_config(uid)
     ctx.obj["client"] = PrometheusClient(proxy_config)
