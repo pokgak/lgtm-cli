@@ -175,6 +175,23 @@ class TempoClient(LGTMClient):
         return self.get(f"/api/search/tag/{tag}/values")
 
 
+class GrafanaDatasourceClient(LGTMClient):
+    """Client for the Grafana instance API — datasource discovery and proxy routing."""
+
+    def list_datasources(self) -> list:
+        return self.get("/api/datasources")
+
+    def get_datasource(self, uid: str) -> dict:
+        return self.get(f"/api/datasources/uid/{uid}")
+
+    def proxy_service_config(self, uid: str) -> ServiceConfig:
+        """Return a ServiceConfig that routes requests through the Grafana datasource proxy."""
+        return ServiceConfig(
+            url=f"{self.base_url}/api/datasources/proxy/uid/{uid}",
+            token=self.config.token,
+        )
+
+
 class GrafanaCloudClient:
     """Client for the Grafana Cloud management API."""
 

@@ -25,6 +25,7 @@ class InstanceConfig:
     prometheus: ServiceConfig | None = None
     tempo: ServiceConfig | None = None
     alerting: ServiceConfig | None = None
+    grafana: ServiceConfig | None = None
 
 
 @dataclass
@@ -132,6 +133,7 @@ def load_config(path: Path | None = None) -> Config:
             prometheus=parse_service_config(instance_data.get("prometheus")),
             tempo=parse_service_config(instance_data.get("tempo")),
             alerting=parse_service_config(instance_data.get("alerting")),
+            grafana=parse_service_config(instance_data.get("grafana")),
         )
 
     return Config(
