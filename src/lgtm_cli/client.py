@@ -24,7 +24,7 @@ class LGTMClient:
             headers.update(self.config.headers)
         return headers
 
-    def get(self, path: str, params: dict | None = None) -> dict:
+    def get(self, path: str, params: dict | None = None) -> dict | list:
         url = f"{self.base_url}{path}"
         with httpx.Client(timeout=self.timeout) as client:
             response = client.get(url, params=params, headers=self._get_headers())
@@ -173,6 +173,35 @@ class TempoClient(LGTMClient):
 
     def tag_values(self, tag: str) -> dict:
         return self.get(f"/api/search/tag/{tag}/values")
+
+
+class GrafanaDatasourceClient(LGTMClient):
+    """Client for the Grafana instance API — datasource discovery and proxy routing."""
+
+    def list_datasources(self) -> list:
+        return self.get("/api/datasources")
+
+    def get_datasource(self, uid: str) -> dict:
+        return self.get(f"/api/datasources/uid/{uid}")
+
+    def proxy_service_config(self, uid: str) -> ServiceConfig:
+        """Return a ServiceConfig that routes requests through the Grafana datasource proxy.
+
+        The proxy authenticates with the Grafana service account token (Bearer).
+        Any username on the grafana config is not forwarded — the proxy does not
+        use datasource-level Basic auth credentials.
+        """
+        if self.config.username:
+            import warnings
+            warnings.warn(
+                "grafana config has a 'username' set, but the datasource proxy uses Bearer auth only; "
+                "username will be ignored. Remove it from the grafana config to suppress this warning.",
+                stacklevel=2,
+            )
+        return ServiceConfig(
+            url=f"{self.base_url}/api/datasources/proxy/uid/{uid}",
+            token=self.config.token,
+        )
 
 
 class GrafanaCloudClient:

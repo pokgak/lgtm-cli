@@ -7,7 +7,7 @@ import click
 import yaml
 
 from .config import load_config, generate_stack_instances, write_config, DEFAULT_CONFIG_PATH
-from .client import LokiClient, PrometheusClient, TempoClient, AlertingClient, GrafanaCloudClient
+from .client import LokiClient, PrometheusClient, TempoClient, AlertingClient, GrafanaCloudClient, GrafanaDatasourceClient
 
 
 # Best practice defaults
@@ -164,6 +164,137 @@ def _config_not_found_exit(ctx):
     sys.exit(1)
 
 
+def _register_loki_commands(group: click.Group, cmd_prefix: str = "lgtm loki"):
+    """Register loki subcommands on the given group (used by both `loki` and `grafana loki <uid>`)."""
+
+    @group.command("query")
+    @click.argument("query")
+    @click.option("--start", "-s", help="Start time (RFC3339). Default: 15 minutes ago")
+    @click.option("--end", "-e", help="End time (RFC3339). Default: now")
+    @click.option("--limit", "-l", default=DEFAULT_LOKI_LIMIT, help=f"Max entries (default: {DEFAULT_LOKI_LIMIT})")
+    @click.option("--direction", "-d", type=click.Choice(["backward", "forward"]), default="backward")
+    @click.pass_context
+    def query(ctx, query: str, start: str | None, end: str | None, limit: int, direction: str):
+        """Query logs with LogQL.
+
+        Examples:
+
+          lgtm loki query '{app="myapp"}'
+
+          lgtm loki query '{app="myapp"} |= "error"' --limit 100
+
+          lgtm loki query '{app="myapp"}' --start 2024-01-15T10:00:00Z --end 2024-01-15T11:00:00Z
+        """
+        default_start, default_end = get_default_times()
+        try:
+            result = ctx.obj["client"].query(
+                query=query,
+                start=start or default_start,
+                end=end or default_end,
+                limit=limit,
+                direction=direction,
+            )
+            count = _count_results(result)
+            hints = [
+                "narrow results → add label filter or line filter e.g. '|= \"error\"'",
+                f"aggregate → {cmd_prefix} instant 'count_over_time({{...}}[5m])'",
+            ]
+            if count is not None and count >= limit:
+                hints.insert(0, f"limit of {limit} reached → use --limit to increase or narrow your query")
+            output_json(result, ctx, hints=hints)
+        except Exception as e:
+            output_error(str(e), suggestions=["Check your LogQL syntax", f"Use '{cmd_prefix} labels' to discover available labels"], ctx=ctx)
+            sys.exit(1)
+
+    @group.command("instant")
+    @click.argument("query")
+    @click.option("--time", "-t", help="Evaluation time (RFC3339). Default: now")
+    @click.pass_context
+    def instant(ctx, query: str, time: str | None):
+        """Run instant query (for metric queries like count_over_time).
+
+        Examples:
+
+          lgtm loki instant 'count_over_time({app="myapp"}[5m])'
+
+          lgtm loki instant 'sum by (level) (count_over_time({app="myapp"} | json [5m]))'
+        """
+        try:
+            result = ctx.obj["client"].query_instant(query, time)
+            hints = [
+                f"range query → {cmd_prefix} query '{{...}}' to see raw logs",
+                "break down → add 'by (label)' to your aggregation",
+            ]
+            output_json(result, ctx, hints=hints)
+        except Exception as e:
+            output_error(str(e), suggestions=["Check your LogQL syntax"], ctx=ctx)
+            sys.exit(1)
+
+    @group.command("labels")
+    @click.option("--start", "-s", help="Start time filter")
+    @click.option("--end", "-e", help="End time filter")
+    @click.pass_context
+    def labels(ctx, start: str | None, end: str | None):
+        """List available labels.
+
+        Use this first to discover what labels are available before querying.
+        """
+        try:
+            result = ctx.obj["client"].labels(start, end)
+            hints = [f"get values → {cmd_prefix} label-values <label>"]
+            output_json(result, ctx, hints=hints)
+        except Exception as e:
+            output_error(str(e), ctx=ctx)
+            sys.exit(1)
+
+    @group.command("label-values")
+    @click.argument("label")
+    @click.option("--start", "-s", help="Start time filter")
+    @click.option("--end", "-e", help="End time filter")
+    @click.pass_context
+    def label_values(ctx, label: str, start: str | None, end: str | None):
+        """List values for a label.
+
+        Examples:
+
+          lgtm loki label-values app
+
+          lgtm loki label-values namespace
+        """
+        try:
+            result = ctx.obj["client"].label_values(label, start, end)
+            hints = [
+                f"query with label → {cmd_prefix} query '{{{label}=\"<value>\"}}'",
+                f"see all labels → {cmd_prefix} labels",
+            ]
+            output_json(result, ctx, hints=hints)
+        except Exception as e:
+            output_error(str(e), suggestions=[f"Use '{cmd_prefix} labels' to see available labels"], ctx=ctx)
+            sys.exit(1)
+
+    @group.command("series")
+    @click.argument("match", nargs=-1, required=True)
+    @click.option("--start", "-s", help="Start time filter")
+    @click.option("--end", "-e", help="End time filter")
+    @click.pass_context
+    def series(ctx, match: tuple[str, ...], start: str | None, end: str | None):
+        """List series matching selectors.
+
+        Examples:
+
+          lgtm loki series '{app="myapp"}'
+
+          lgtm loki series '{namespace="prod"}' '{namespace="staging"}'
+        """
+        try:
+            result = ctx.obj["client"].series(list(match), start, end)
+            hints = [f"query logs → {cmd_prefix} query '<selector>'"]
+            output_json(result, ctx, hints=hints)
+        except Exception as e:
+            output_error(str(e), ctx=ctx)
+            sys.exit(1)
+
+
 @main.group()
 @click.pass_context
 def loki(ctx):
@@ -182,139 +313,160 @@ def loki(ctx):
     ctx.obj["client"] = LokiClient(instance.loki)
 
 
-@loki.command()
-@click.argument("query")
-@click.option("--start", "-s", help="Start time (RFC3339). Default: 15 minutes ago")
-@click.option("--end", "-e", help="End time (RFC3339). Default: now")
-@click.option("--limit", "-l", default=DEFAULT_LOKI_LIMIT, help=f"Max entries (default: {DEFAULT_LOKI_LIMIT})")
-@click.option("--direction", "-d", type=click.Choice(["backward", "forward"]), default="backward")
-@click.pass_context
-def query(ctx, query: str, start: str | None, end: str | None, limit: int, direction: str):
-    """Query logs with LogQL.
-
-    Examples:
-
-      lgtm loki query '{app="myapp"}'
-
-      lgtm loki query '{app="myapp"} |= "error"' --limit 100
-
-      lgtm loki query '{app="myapp"}' --start 2024-01-15T10:00:00Z --end 2024-01-15T11:00:00Z
-    """
-    default_start, default_end = get_default_times()
-    try:
-        result = ctx.obj["client"].query(
-            query=query,
-            start=start or default_start,
-            end=end or default_end,
-            limit=limit,
-            direction=direction,
-        )
-        count = _count_results(result)
-        hints = [
-            "narrow results → add label filter or line filter e.g. '|= \"error\"'",
-            "aggregate → lgtm loki instant 'count_over_time({...}[5m])'",
-        ]
-        if count is not None and count >= limit:
-            hints.insert(0, f"limit of {limit} reached → use --limit to increase or narrow your query")
-        output_json(result, ctx, hints=hints)
-    except Exception as e:
-        output_error(str(e), suggestions=["Check your LogQL syntax", "Use 'lgtm loki labels' to discover available labels"], ctx=ctx)
-        sys.exit(1)
-
-
-@loki.command()
-@click.argument("query")
-@click.option("--time", "-t", help="Evaluation time (RFC3339). Default: now")
-@click.pass_context
-def instant(ctx, query: str, time: str | None):
-    """Run instant query (for metric queries like count_over_time).
-
-    Examples:
-
-      lgtm loki instant 'count_over_time({app="myapp"}[5m])'
-
-      lgtm loki instant 'sum by (level) (count_over_time({app="myapp"} | json [5m]))'
-    """
-    try:
-        result = ctx.obj["client"].query_instant(query, time)
-        hints = [
-            "range query → lgtm loki query '{...}' to see raw logs",
-            "break down → add 'by (label)' to your aggregation",
-        ]
-        output_json(result, ctx, hints=hints)
-    except Exception as e:
-        output_error(str(e), suggestions=["Check your LogQL syntax"], ctx=ctx)
-        sys.exit(1)
-
-
-@loki.command()
-@click.option("--start", "-s", help="Start time filter")
-@click.option("--end", "-e", help="End time filter")
-@click.pass_context
-def labels(ctx, start: str | None, end: str | None):
-    """List available labels.
-
-    Use this first to discover what labels are available before querying.
-    """
-    try:
-        result = ctx.obj["client"].labels(start, end)
-        hints = ["get values → lgtm loki label-values <label>"]
-        output_json(result, ctx, hints=hints)
-    except Exception as e:
-        output_error(str(e), ctx=ctx)
-        sys.exit(1)
-
-
-@loki.command("label-values")
-@click.argument("label")
-@click.option("--start", "-s", help="Start time filter")
-@click.option("--end", "-e", help="End time filter")
-@click.pass_context
-def label_values(ctx, label: str, start: str | None, end: str | None):
-    """List values for a label.
-
-    Examples:
-
-      lgtm loki label-values app
-
-      lgtm loki label-values namespace
-    """
-    try:
-        result = ctx.obj["client"].label_values(label, start, end)
-        hints = [
-            f"query with label → lgtm loki query '{{{label}=\"<value>\"}}'",
-            "see all labels → lgtm loki labels",
-        ]
-        output_json(result, ctx, hints=hints)
-    except Exception as e:
-        output_error(str(e), suggestions=["Use 'lgtm loki labels' to see available labels"], ctx=ctx)
-        sys.exit(1)
-
-
-@loki.command()
-@click.argument("match", nargs=-1, required=True)
-@click.option("--start", "-s", help="Start time filter")
-@click.option("--end", "-e", help="End time filter")
-@click.pass_context
-def series(ctx, match: tuple[str, ...], start: str | None, end: str | None):
-    """List series matching selectors.
-
-    Examples:
-
-      lgtm loki series '{app="myapp"}'
-
-      lgtm loki series '{namespace="prod"}' '{namespace="staging"}'
-    """
-    try:
-        result = ctx.obj["client"].series(list(match), start, end)
-        hints = ["query logs → lgtm loki query '<selector>'"]
-        output_json(result, ctx, hints=hints)
-    except Exception as e:
-        output_error(str(e), ctx=ctx)
-        sys.exit(1)
+_register_loki_commands(loki, cmd_prefix="lgtm loki")
 
 
 # === PROMETHEUS COMMANDS ===
+
+def _register_prom_commands(group: click.Group, cmd_prefix: str = "lgtm prom"):
+    """Register prometheus subcommands on the given group (used by both `prom` and `grafana prom <uid>`)."""
+
+    @group.command("query")
+    @click.argument("query")
+    @click.option("--time", "-t", help="Evaluation time (RFC3339). Default: now")
+    @click.pass_context
+    def query(ctx, query: str, time: str | None):
+        """Run instant query.
+
+        Examples:
+
+          lgtm prom query 'up{job="prometheus"}'
+
+          lgtm prom query 'rate(http_requests_total[5m])'
+        """
+        try:
+            result = ctx.obj["client"].query(query, time)
+            hints = [
+                f"time series → {cmd_prefix} range '<query>' to see values over time",
+                "visualize → pipe range output to 'lgtm chart'",
+            ]
+            output_json(result, ctx, hints=hints)
+        except Exception as e:
+            output_error(str(e), suggestions=["Check your PromQL syntax", f"Use '{cmd_prefix} labels' to discover available labels"], ctx=ctx)
+            sys.exit(1)
+
+    @group.command("range")
+    @click.argument("query")
+    @click.option("--start", "-s", help="Start time (RFC3339). Default: 15 minutes ago")
+    @click.option("--end", "-e", help="End time (RFC3339). Default: now")
+    @click.option("--step", default=DEFAULT_PROM_STEP, help=f"Resolution step (default: {DEFAULT_PROM_STEP})")
+    @click.pass_context
+    def range_cmd(ctx, query: str, start: str | None, end: str | None, step: str):
+        """Run range query.
+
+        Examples:
+
+          lgtm prom range 'rate(http_requests_total[5m])'
+
+          lgtm prom range 'up' --step 5m --start 2024-01-15T10:00:00Z
+        """
+        default_start, default_end = get_default_times()
+        try:
+            result = ctx.obj["client"].query_range(
+                query=query,
+                start=start or default_start,
+                end=end or default_end,
+                step=step,
+            )
+            hints = [
+                "visualize → save output to file, then 'lgtm chart <file> -t \"Title\"'",
+                "finer resolution → use --step 15s or --step 30s",
+                f"instant value → {cmd_prefix} query '<query>' for current point-in-time",
+            ]
+            output_json(result, ctx, hints=hints)
+        except Exception as e:
+            output_error(str(e), suggestions=["Check your PromQL syntax"], ctx=ctx)
+            sys.exit(1)
+
+    @group.command("labels")
+    @click.option("--start", "-s", help="Start time filter")
+    @click.option("--end", "-e", help="End time filter")
+    @click.pass_context
+    def labels(ctx, start: str | None, end: str | None):
+        """List available labels.
+
+        Use this first to discover what labels are available.
+        """
+        try:
+            result = ctx.obj["client"].labels(start, end)
+            hints = [
+                f"get values → {cmd_prefix} label-values <label>",
+                f"list metric names → {cmd_prefix} label-values __name__",
+            ]
+            output_json(result, ctx, hints=hints)
+        except Exception as e:
+            output_error(str(e), ctx=ctx)
+            sys.exit(1)
+
+    @group.command("label-values")
+    @click.argument("label")
+    @click.option("--start", "-s", help="Start time filter")
+    @click.option("--end", "-e", help="End time filter")
+    @click.pass_context
+    def label_values(ctx, label: str, start: str | None, end: str | None):
+        """List values for a label.
+
+        Examples:
+
+          lgtm prom label-values job
+
+          lgtm prom label-values __name__  # List all metric names
+        """
+        try:
+            result = ctx.obj["client"].label_values(label, start, end)
+            hints = [
+                f"query with label → {cmd_prefix} query '<metric>{{{label}=\"<value>\"}}'",
+                f"see all labels → {cmd_prefix} labels",
+            ]
+            output_json(result, ctx, hints=hints)
+        except Exception as e:
+            output_error(str(e), suggestions=[f"Use '{cmd_prefix} labels' to see available labels"], ctx=ctx)
+            sys.exit(1)
+
+    @group.command("series")
+    @click.argument("match", nargs=-1, required=True)
+    @click.option("--start", "-s", help="Start time filter")
+    @click.option("--end", "-e", help="End time filter")
+    @click.pass_context
+    def series(ctx, match: tuple[str, ...], start: str | None, end: str | None):
+        """List series matching selectors.
+
+        Examples:
+
+          lgtm prom series 'up'
+
+          lgtm prom series 'http_requests_total{job="api"}'
+        """
+        try:
+            result = ctx.obj["client"].series(list(match), start, end)
+            hints = [f"query metric → {cmd_prefix} query '<metric>{{<labels>}}'"]
+            output_json(result, ctx, hints=hints)
+        except Exception as e:
+            output_error(str(e), ctx=ctx)
+            sys.exit(1)
+
+    @group.command("metadata")
+    @click.option("--metric", "-m", help="Filter by metric name")
+    @click.pass_context
+    def metadata(ctx, metric: str | None):
+        """Get metric metadata.
+
+        Examples:
+
+          lgtm prom metadata
+
+          lgtm prom metadata --metric http_requests_total
+        """
+        try:
+            result = ctx.obj["client"].metadata(metric)
+            hints = [f"query metric → {cmd_prefix} query '<metric_name>'"]
+            if not metric:
+                hints.insert(0, f"filter by metric → {cmd_prefix} metadata --metric <name>")
+            output_json(result, ctx, hints=hints)
+        except Exception as e:
+            output_error(str(e), ctx=ctx)
+            sys.exit(1)
+
 
 @main.group()
 @click.pass_context
@@ -334,156 +486,7 @@ def prom(ctx):
     ctx.obj["client"] = PrometheusClient(instance.prometheus)
 
 
-@prom.command()
-@click.argument("query")
-@click.option("--time", "-t", help="Evaluation time (RFC3339). Default: now")
-@click.pass_context
-def query(ctx, query: str, time: str | None):
-    """Run instant query.
-
-    Examples:
-
-      lgtm prom query 'up{job="prometheus"}'
-
-      lgtm prom query 'rate(http_requests_total[5m])'
-    """
-    try:
-        result = ctx.obj["client"].query(query, time)
-        hints = [
-            "time series → lgtm prom range '<query>' to see values over time",
-            "visualize → pipe range output to 'lgtm chart'",
-        ]
-        output_json(result, ctx, hints=hints)
-    except Exception as e:
-        output_error(str(e), suggestions=["Check your PromQL syntax", "Use 'lgtm prom labels' to discover available labels"], ctx=ctx)
-        sys.exit(1)
-
-
-@prom.command()
-@click.argument("query")
-@click.option("--start", "-s", help="Start time (RFC3339). Default: 15 minutes ago")
-@click.option("--end", "-e", help="End time (RFC3339). Default: now")
-@click.option("--step", default=DEFAULT_PROM_STEP, help=f"Resolution step (default: {DEFAULT_PROM_STEP})")
-@click.pass_context
-def range(ctx, query: str, start: str | None, end: str | None, step: str):
-    """Run range query.
-
-    Examples:
-
-      lgtm prom range 'rate(http_requests_total[5m])'
-
-      lgtm prom range 'up' --step 5m --start 2024-01-15T10:00:00Z
-    """
-    default_start, default_end = get_default_times()
-    try:
-        result = ctx.obj["client"].query_range(
-            query=query,
-            start=start or default_start,
-            end=end or default_end,
-            step=step,
-        )
-        hints = [
-            "visualize → save output to file, then 'lgtm chart <file> -t \"Title\"'",
-            "finer resolution → use --step 15s or --step 30s",
-            "instant value → lgtm prom query '<query>' for current point-in-time",
-        ]
-        output_json(result, ctx, hints=hints)
-    except Exception as e:
-        output_error(str(e), suggestions=["Check your PromQL syntax"], ctx=ctx)
-        sys.exit(1)
-
-
-@prom.command()
-@click.option("--start", "-s", help="Start time filter")
-@click.option("--end", "-e", help="End time filter")
-@click.pass_context
-def labels(ctx, start: str | None, end: str | None):
-    """List available labels.
-
-    Use this first to discover what labels are available.
-    """
-    try:
-        result = ctx.obj["client"].labels(start, end)
-        hints = [
-            "get values → lgtm prom label-values <label>",
-            "list metric names → lgtm prom label-values __name__",
-        ]
-        output_json(result, ctx, hints=hints)
-    except Exception as e:
-        output_error(str(e), ctx=ctx)
-        sys.exit(1)
-
-
-@prom.command("label-values")
-@click.argument("label")
-@click.option("--start", "-s", help="Start time filter")
-@click.option("--end", "-e", help="End time filter")
-@click.pass_context
-def prom_label_values(ctx, label: str, start: str | None, end: str | None):
-    """List values for a label.
-
-    Examples:
-
-      lgtm prom label-values job
-
-      lgtm prom label-values __name__  # List all metric names
-    """
-    try:
-        result = ctx.obj["client"].label_values(label, start, end)
-        hints = [
-            f"query with label → lgtm prom query '<metric>{{{label}=\"<value>\"}}'",
-            "see all labels → lgtm prom labels",
-        ]
-        output_json(result, ctx, hints=hints)
-    except Exception as e:
-        output_error(str(e), suggestions=["Use 'lgtm prom labels' to see available labels"], ctx=ctx)
-        sys.exit(1)
-
-
-@prom.command()
-@click.argument("match", nargs=-1, required=True)
-@click.option("--start", "-s", help="Start time filter")
-@click.option("--end", "-e", help="End time filter")
-@click.pass_context
-def series(ctx, match: tuple[str, ...], start: str | None, end: str | None):
-    """List series matching selectors.
-
-    Examples:
-
-      lgtm prom series 'up'
-
-      lgtm prom series 'http_requests_total{job="api"}'
-    """
-    try:
-        result = ctx.obj["client"].series(list(match), start, end)
-        hints = ["query metric → lgtm prom query '<metric>{<labels>}'"]
-        output_json(result, ctx, hints=hints)
-    except Exception as e:
-        output_error(str(e), ctx=ctx)
-        sys.exit(1)
-
-
-@prom.command()
-@click.option("--metric", "-m", help="Filter by metric name")
-@click.pass_context
-def metadata(ctx, metric: str | None):
-    """Get metric metadata.
-
-    Examples:
-
-      lgtm prom metadata
-
-      lgtm prom metadata --metric http_requests_total
-    """
-    try:
-        result = ctx.obj["client"].metadata(metric)
-        hints = ["query metric → lgtm prom query '<metric_name>'"]
-        if not metric:
-            hints.insert(0, "filter by metric → lgtm prom metadata --metric <name>")
-        output_json(result, ctx, hints=hints)
-    except Exception as e:
-        output_error(str(e), ctx=ctx)
-        sys.exit(1)
+_register_prom_commands(prom, cmd_prefix="lgtm prom")
 
 
 # === TEMPO COMMANDS ===
@@ -848,6 +851,140 @@ def alerts_silence_delete(ctx, silence_id: str):
         sys.exit(1)
 
 
+# === GRAFANA COMMANDS ===
+
+@main.group()
+@click.pass_context
+def grafana(ctx):
+    """Query Grafana datasources directly via the Grafana instance API.
+
+    Requires a 'grafana' section in the instance config with a Grafana service account token.
+
+    Example config:
+
+      instances:
+        myorg:
+          grafana:
+            url: https://myorg.grafana.net
+            token: ${GRAFANA_SA_TOKEN}
+    """
+    if not ctx.obj["config"]:
+        _config_not_found_exit(ctx)
+    instance = get_instance_or_exit(ctx)
+    if not instance.grafana:
+        output_error(
+            f"Grafana not configured for instance '{instance.name}'",
+            suggestions=[
+                "Add a 'grafana' section to this instance in config:",
+                "  grafana:",
+                "    url: https://<org>.grafana.net",
+                "    token: ${GRAFANA_SA_TOKEN}",
+                "Note: requires a Grafana service account token (not the Cloud API token)",
+            ],
+            ctx=ctx,
+        )
+        sys.exit(1)
+    ctx.obj["grafana_client"] = GrafanaDatasourceClient(instance.grafana)
+
+
+@grafana.command("datasources")
+@click.option("--type", "ds_type", default=None, help="Filter by datasource type (e.g. prometheus, loki, tempo)")
+@click.pass_context
+def grafana_datasources(ctx, ds_type: str | None):
+    """List available datasources in this Grafana instance.
+
+    Examples:
+
+      lgtm -i myorg grafana datasources
+
+      lgtm -i myorg grafana datasources --type prometheus
+
+      lgtm -i myorg grafana datasources --type loki
+    """
+    try:
+        result = ctx.obj["grafana_client"].list_datasources()
+        if ds_type:
+            result = [ds for ds in result if ds.get("type") == ds_type]
+        hints = [
+            "get details → lgtm grafana datasource <uid>",
+            "query via proxy → lgtm grafana prom <uid> query 'up'",
+            "filter by type → lgtm grafana datasources --type prometheus",
+        ]
+        output_json(result, ctx, hints=hints)
+    except Exception as e:
+        output_error(str(e), ctx=ctx)
+        sys.exit(1)
+
+
+@grafana.command("datasource")
+@click.argument("uid")
+@click.pass_context
+def grafana_datasource(ctx, uid: str):
+    """Get details for a specific datasource by UID.
+
+    Examples:
+
+      lgtm -i myorg grafana datasource abc123def456
+    """
+    try:
+        result = ctx.obj["grafana_client"].get_datasource(uid)
+        ds_type = result.get("type", "")
+        hints = []
+        if ds_type == "prometheus":
+            hints.append(f"query → lgtm grafana prom {uid} query 'up'")
+        elif ds_type == "loki":
+            hints.append(f"query → lgtm grafana loki {uid} query '{{job=\"<job>\"}}'")
+        hints.append("list all → lgtm grafana datasources")
+        output_json(result, ctx, hints=hints)
+    except Exception as e:
+        output_error(str(e), suggestions=["Use 'lgtm grafana datasources' to list available datasource UIDs"], ctx=ctx)
+        sys.exit(1)
+
+
+@grafana.group("loki")
+@click.argument("uid")
+@click.pass_context
+def grafana_loki(ctx, uid: str):
+    """Query a Loki datasource via the Grafana proxy.
+
+    UID is the datasource UID from 'lgtm grafana datasources --type loki'.
+
+    Examples:
+
+      lgtm -i myorg grafana loki <uid> query '{app="myapp"}'
+
+      lgtm -i myorg grafana loki <uid> labels
+    """
+    proxy_config = ctx.obj["grafana_client"].proxy_service_config(uid)
+    ctx.obj["client"] = LokiClient(proxy_config)
+    ctx.obj["cmd_prefix"] = f"lgtm grafana loki {uid}"
+
+
+_register_loki_commands(grafana_loki, cmd_prefix="lgtm grafana loki <uid>")
+
+
+@grafana.group("prom")
+@click.argument("uid")
+@click.pass_context
+def grafana_prom(ctx, uid: str):
+    """Query a Prometheus datasource via the Grafana proxy.
+
+    UID is the datasource UID from 'lgtm grafana datasources --type prometheus'.
+
+    Examples:
+
+      lgtm -i myorg grafana prom <uid> query 'up'
+
+      lgtm -i myorg grafana prom <uid> range 'rate(http_requests_total[5m])'
+    """
+    proxy_config = ctx.obj["grafana_client"].proxy_service_config(uid)
+    ctx.obj["client"] = PrometheusClient(proxy_config)
+    ctx.obj["cmd_prefix"] = f"lgtm grafana prom {uid}"
+
+
+_register_prom_commands(grafana_prom, cmd_prefix="lgtm grafana prom <uid>")
+
+
 # === CONFIG COMMANDS ===
 
 @main.command()
@@ -867,12 +1004,14 @@ def instances(ctx):
             "prometheus": instance.prometheus.url if instance.prometheus else None,
             "tempo": instance.tempo.url if instance.tempo else None,
             "alerting": instance.alerting.url if instance.alerting else None,
+            "grafana": instance.grafana.url if instance.grafana else None,
         }
     hints = [
         "query logs → lgtm -i <instance> loki query '{app=\"<app>\"}'",
         "query metrics → lgtm -i <instance> prom query 'up'",
         "search traces → lgtm -i <instance> tempo search",
         "check alerts → lgtm -i <instance> alerts list",
+        "explore datasources → lgtm -i <instance> grafana datasources",
     ]
     output_json(result, ctx, hints=hints)
 
@@ -884,6 +1023,38 @@ def _build_command_schema(cmd: click.BaseCommand, name: str | None = None) -> di
         "description": (cmd.help or "").split("\n\n")[0].strip(),
     }
 
+    args = []
+    opts = []
+    for param in cmd.params:
+        if isinstance(param, click.Argument):
+            args.append({
+                "name": param.name,
+                "required": param.required,
+                "nargs": param.nargs,
+            })
+        elif isinstance(param, click.Option):
+            if param.name == "help":
+                continue
+            opt = {
+                "flags": list(param.opts + param.secondary_opts),
+                "name": param.name,
+                "type": param.type.name,
+                "required": param.required,
+            }
+            if param.default is not None and param.default != () and isinstance(param.default, (str, int, float, bool)):
+                opt["default"] = param.default
+            if param.help:
+                opt["description"] = param.help
+            if isinstance(param.type, click.Choice):
+                opt["choices"] = list(param.type.choices)
+            if param.is_flag:
+                opt["type"] = "flag"
+            opts.append(opt)
+    if args:
+        schema["arguments"] = args
+    if opts:
+        schema["options"] = opts
+
     if isinstance(cmd, click.MultiCommand):
         children = []
         for sub_name in cmd.list_commands(None):
@@ -891,38 +1062,6 @@ def _build_command_schema(cmd: click.BaseCommand, name: str | None = None) -> di
             if sub_cmd:
                 children.append(_build_command_schema(sub_cmd, sub_name))
         schema["subcommands"] = children
-    else:
-        args = []
-        opts = []
-        for param in cmd.params:
-            if isinstance(param, click.Argument):
-                args.append({
-                    "name": param.name,
-                    "required": param.required,
-                    "nargs": param.nargs,
-                })
-            elif isinstance(param, click.Option):
-                if param.name == "help":
-                    continue
-                opt = {
-                    "flags": list(param.opts + param.secondary_opts),
-                    "name": param.name,
-                    "type": param.type.name,
-                    "required": param.required,
-                }
-                if param.default is not None and param.default != () and isinstance(param.default, (str, int, float, bool)):
-                    opt["default"] = param.default
-                if param.help:
-                    opt["description"] = param.help
-                if isinstance(param.type, click.Choice):
-                    opt["choices"] = list(param.type.choices)
-                if param.is_flag:
-                    opt["type"] = "flag"
-                opts.append(opt)
-        if args:
-            schema["arguments"] = args
-        if opts:
-            schema["options"] = opts
 
     return schema
 
