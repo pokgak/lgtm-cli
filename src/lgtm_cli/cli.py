@@ -164,7 +164,7 @@ def _config_not_found_exit(ctx):
     sys.exit(1)
 
 
-def _register_loki_commands(group: click.Group):
+def _register_loki_commands(group: click.Group, cmd_prefix: str = "lgtm loki"):
     """Register loki subcommands on the given group (used by both `loki` and `grafana loki <uid>`)."""
 
     @group.command("query")
@@ -197,13 +197,13 @@ def _register_loki_commands(group: click.Group):
             count = _count_results(result)
             hints = [
                 "narrow results → add label filter or line filter e.g. '|= \"error\"'",
-                "aggregate → lgtm loki instant 'count_over_time({...}[5m])'",
+                f"aggregate → {cmd_prefix} instant 'count_over_time({{...}}[5m])'",
             ]
             if count is not None and count >= limit:
                 hints.insert(0, f"limit of {limit} reached → use --limit to increase or narrow your query")
             output_json(result, ctx, hints=hints)
         except Exception as e:
-            output_error(str(e), suggestions=["Check your LogQL syntax", "Use 'lgtm loki labels' to discover available labels"], ctx=ctx)
+            output_error(str(e), suggestions=["Check your LogQL syntax", f"Use '{cmd_prefix} labels' to discover available labels"], ctx=ctx)
             sys.exit(1)
 
     @group.command("instant")
@@ -222,7 +222,7 @@ def _register_loki_commands(group: click.Group):
         try:
             result = ctx.obj["client"].query_instant(query, time)
             hints = [
-                "range query → lgtm loki query '{...}' to see raw logs",
+                f"range query → {cmd_prefix} query '{{...}}' to see raw logs",
                 "break down → add 'by (label)' to your aggregation",
             ]
             output_json(result, ctx, hints=hints)
@@ -241,7 +241,7 @@ def _register_loki_commands(group: click.Group):
         """
         try:
             result = ctx.obj["client"].labels(start, end)
-            hints = ["get values → lgtm loki label-values <label>"]
+            hints = [f"get values → {cmd_prefix} label-values <label>"]
             output_json(result, ctx, hints=hints)
         except Exception as e:
             output_error(str(e), ctx=ctx)
@@ -264,12 +264,12 @@ def _register_loki_commands(group: click.Group):
         try:
             result = ctx.obj["client"].label_values(label, start, end)
             hints = [
-                f"query with label → lgtm loki query '{{{label}=\"<value>\"}}'",
-                "see all labels → lgtm loki labels",
+                f"query with label → {cmd_prefix} query '{{{label}=\"<value>\"}}'",
+                f"see all labels → {cmd_prefix} labels",
             ]
             output_json(result, ctx, hints=hints)
         except Exception as e:
-            output_error(str(e), suggestions=["Use 'lgtm loki labels' to see available labels"], ctx=ctx)
+            output_error(str(e), suggestions=[f"Use '{cmd_prefix} labels' to see available labels"], ctx=ctx)
             sys.exit(1)
 
     @group.command("series")
@@ -288,7 +288,7 @@ def _register_loki_commands(group: click.Group):
         """
         try:
             result = ctx.obj["client"].series(list(match), start, end)
-            hints = ["query logs → lgtm loki query '<selector>'"]
+            hints = [f"query logs → {cmd_prefix} query '<selector>'"]
             output_json(result, ctx, hints=hints)
         except Exception as e:
             output_error(str(e), ctx=ctx)
@@ -313,12 +313,12 @@ def loki(ctx):
     ctx.obj["client"] = LokiClient(instance.loki)
 
 
-_register_loki_commands(loki)
+_register_loki_commands(loki, cmd_prefix="lgtm loki")
 
 
 # === PROMETHEUS COMMANDS ===
 
-def _register_prom_commands(group: click.Group):
+def _register_prom_commands(group: click.Group, cmd_prefix: str = "lgtm prom"):
     """Register prometheus subcommands on the given group (used by both `prom` and `grafana prom <uid>`)."""
 
     @group.command("query")
@@ -337,12 +337,12 @@ def _register_prom_commands(group: click.Group):
         try:
             result = ctx.obj["client"].query(query, time)
             hints = [
-                "time series → lgtm prom range '<query>' to see values over time",
+                f"time series → {cmd_prefix} range '<query>' to see values over time",
                 "visualize → pipe range output to 'lgtm chart'",
             ]
             output_json(result, ctx, hints=hints)
         except Exception as e:
-            output_error(str(e), suggestions=["Check your PromQL syntax", "Use 'lgtm prom labels' to discover available labels"], ctx=ctx)
+            output_error(str(e), suggestions=["Check your PromQL syntax", f"Use '{cmd_prefix} labels' to discover available labels"], ctx=ctx)
             sys.exit(1)
 
     @group.command("range")
@@ -371,7 +371,7 @@ def _register_prom_commands(group: click.Group):
             hints = [
                 "visualize → save output to file, then 'lgtm chart <file> -t \"Title\"'",
                 "finer resolution → use --step 15s or --step 30s",
-                "instant value → lgtm prom query '<query>' for current point-in-time",
+                f"instant value → {cmd_prefix} query '<query>' for current point-in-time",
             ]
             output_json(result, ctx, hints=hints)
         except Exception as e:
@@ -390,8 +390,8 @@ def _register_prom_commands(group: click.Group):
         try:
             result = ctx.obj["client"].labels(start, end)
             hints = [
-                "get values → lgtm prom label-values <label>",
-                "list metric names → lgtm prom label-values __name__",
+                f"get values → {cmd_prefix} label-values <label>",
+                f"list metric names → {cmd_prefix} label-values __name__",
             ]
             output_json(result, ctx, hints=hints)
         except Exception as e:
@@ -415,12 +415,12 @@ def _register_prom_commands(group: click.Group):
         try:
             result = ctx.obj["client"].label_values(label, start, end)
             hints = [
-                f"query with label → lgtm prom query '<metric>{{{label}=\"<value>\"}}'",
-                "see all labels → lgtm prom labels",
+                f"query with label → {cmd_prefix} query '<metric>{{{label}=\"<value>\"}}'",
+                f"see all labels → {cmd_prefix} labels",
             ]
             output_json(result, ctx, hints=hints)
         except Exception as e:
-            output_error(str(e), suggestions=["Use 'lgtm prom labels' to see available labels"], ctx=ctx)
+            output_error(str(e), suggestions=[f"Use '{cmd_prefix} labels' to see available labels"], ctx=ctx)
             sys.exit(1)
 
     @group.command("series")
@@ -439,7 +439,7 @@ def _register_prom_commands(group: click.Group):
         """
         try:
             result = ctx.obj["client"].series(list(match), start, end)
-            hints = ["query metric → lgtm prom query '<metric>{<labels>}'"]
+            hints = [f"query metric → {cmd_prefix} query '<metric>{{<labels>}}'"]
             output_json(result, ctx, hints=hints)
         except Exception as e:
             output_error(str(e), ctx=ctx)
@@ -459,9 +459,9 @@ def _register_prom_commands(group: click.Group):
         """
         try:
             result = ctx.obj["client"].metadata(metric)
-            hints = ["query metric → lgtm prom query '<metric_name>'"]
+            hints = [f"query metric → {cmd_prefix} query '<metric_name>'"]
             if not metric:
-                hints.insert(0, "filter by metric → lgtm prom metadata --metric <name>")
+                hints.insert(0, f"filter by metric → {cmd_prefix} metadata --metric <name>")
             output_json(result, ctx, hints=hints)
         except Exception as e:
             output_error(str(e), ctx=ctx)
@@ -486,7 +486,7 @@ def prom(ctx):
     ctx.obj["client"] = PrometheusClient(instance.prometheus)
 
 
-_register_prom_commands(prom)
+_register_prom_commands(prom, cmd_prefix="lgtm prom")
 
 
 # === TEMPO COMMANDS ===
@@ -957,9 +957,10 @@ def grafana_loki(ctx, uid: str):
     """
     proxy_config = ctx.obj["grafana_client"].proxy_service_config(uid)
     ctx.obj["client"] = LokiClient(proxy_config)
+    ctx.obj["cmd_prefix"] = f"lgtm grafana loki {uid}"
 
 
-_register_loki_commands(grafana_loki)
+_register_loki_commands(grafana_loki, cmd_prefix="lgtm grafana loki <uid>")
 
 
 @grafana.group("prom")
@@ -978,9 +979,10 @@ def grafana_prom(ctx, uid: str):
     """
     proxy_config = ctx.obj["grafana_client"].proxy_service_config(uid)
     ctx.obj["client"] = PrometheusClient(proxy_config)
+    ctx.obj["cmd_prefix"] = f"lgtm grafana prom {uid}"
 
 
-_register_prom_commands(grafana_prom)
+_register_prom_commands(grafana_prom, cmd_prefix="lgtm grafana prom <uid>")
 
 
 # === CONFIG COMMANDS ===
@@ -1021,6 +1023,38 @@ def _build_command_schema(cmd: click.BaseCommand, name: str | None = None) -> di
         "description": (cmd.help or "").split("\n\n")[0].strip(),
     }
 
+    args = []
+    opts = []
+    for param in cmd.params:
+        if isinstance(param, click.Argument):
+            args.append({
+                "name": param.name,
+                "required": param.required,
+                "nargs": param.nargs,
+            })
+        elif isinstance(param, click.Option):
+            if param.name == "help":
+                continue
+            opt = {
+                "flags": list(param.opts + param.secondary_opts),
+                "name": param.name,
+                "type": param.type.name,
+                "required": param.required,
+            }
+            if param.default is not None and param.default != () and isinstance(param.default, (str, int, float, bool)):
+                opt["default"] = param.default
+            if param.help:
+                opt["description"] = param.help
+            if isinstance(param.type, click.Choice):
+                opt["choices"] = list(param.type.choices)
+            if param.is_flag:
+                opt["type"] = "flag"
+            opts.append(opt)
+    if args:
+        schema["arguments"] = args
+    if opts:
+        schema["options"] = opts
+
     if isinstance(cmd, click.MultiCommand):
         children = []
         for sub_name in cmd.list_commands(None):
@@ -1028,38 +1062,6 @@ def _build_command_schema(cmd: click.BaseCommand, name: str | None = None) -> di
             if sub_cmd:
                 children.append(_build_command_schema(sub_cmd, sub_name))
         schema["subcommands"] = children
-    else:
-        args = []
-        opts = []
-        for param in cmd.params:
-            if isinstance(param, click.Argument):
-                args.append({
-                    "name": param.name,
-                    "required": param.required,
-                    "nargs": param.nargs,
-                })
-            elif isinstance(param, click.Option):
-                if param.name == "help":
-                    continue
-                opt = {
-                    "flags": list(param.opts + param.secondary_opts),
-                    "name": param.name,
-                    "type": param.type.name,
-                    "required": param.required,
-                }
-                if param.default is not None and param.default != () and isinstance(param.default, (str, int, float, bool)):
-                    opt["default"] = param.default
-                if param.help:
-                    opt["description"] = param.help
-                if isinstance(param.type, click.Choice):
-                    opt["choices"] = list(param.type.choices)
-                if param.is_flag:
-                    opt["type"] = "flag"
-                opts.append(opt)
-        if args:
-            schema["arguments"] = args
-        if opts:
-            schema["options"] = opts
 
     return schema
 
